@@ -88,7 +88,7 @@ LOGIN_INTERFACE = '''
 '''
 
 # -------------------------------------------------------------
-# 2. واجهة مشغل الـ IPTV والسينما
+# 2. واجهة مشغل الـ IPTV والسينما المحدثة بالروابط المباشرة
 # -------------------------------------------------------------
 PLAYER_INTERFACE = '''
 <!DOCTYPE html>
@@ -97,7 +97,7 @@ PLAYER_INTERFACE = '''
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>المشغل السينمائي المباشر</title>
-    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght=400;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Tajawal', sans-serif; background: #0b0914; color: #fff; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
         header { background: #141124; padding: 15px 25px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); }
@@ -223,7 +223,9 @@ PLAYER_INTERFACE = '''
                         var icon = (currentTab === 'live') ? 'https://cdn-icons-png.flaticon.com/512/716/716429.png' : 'https://cdn-icons-png.flaticon.com/512/4221/4221359.png';
                         
                         row.innerHTML = '<img src="' + icon + '"><div class="item-details"><div class="item-name">' + item.name + '</div></div>';
-                        row.onclick = function() { playVideo(item.proxy_url, item.name, currentTab); };
+                        
+                        // هنا نمرر كلاً من رابط السيرفر المباشر ورابط البروكسي كحل احتياطي
+                        row.onclick = function() { playVideo(item.direct_url, item.proxy_url, item.name, currentTab); };
                         itemsContainer.appendChild(row);
                     });
                 }).catch(err => {
@@ -231,9 +233,12 @@ PLAYER_INTERFACE = '''
                 });
         }
 
-        function playVideo(proxyUrl, name, type) {
+        function playVideo(directUrl, proxyUrl, name, type) {
             document.getElementById('currentPlayingTitle').innerText = "يعرض الآن: " + name;
             if (hls) { hls.destroy(); hls = null; }
+
+            // المحاولة الأولى: تشغيل الرابط المباشر لتخطي قيود السيرفر السحابي
+            var streamUrl = directUrl;
 
             if (type === 'live') {
                 if (Hls.isSupported()) {
@@ -243,25 +248,32 @@ PLAYER_INTERFACE = '''
                         maxBufferLength: 15,
                         maxMaxBufferLength: 30
                     });
-                    hls.loadSource(proxyUrl);
+                    hls.loadSource(streamUrl);
                     hls.attachMedia(videoElement);
                     hls.on(Hls.Events.MANIFEST_PARSED, function() { videoElement.play().catch(e => {}); });
+                    
+                    // إذا فشل الرابط المباشر، يقوم المشغل تلقائياً بالتحويل للرابط الاحتياطي (Proxy)
                     hls.on(Hls.Events.ERROR, function(event, data) {
-                        if (data.fatal) {
-                            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
-                                hls.startLoad();
-                            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
-                                hls.recoverMediaError();
-                            }
+                        if (data.fatal && streamUrl === directUrl) {
+                            console.log("Direct stream failed, switching to proxy...");
+                            streamUrl = proxyUrl;
+                            hls.loadSource(streamUrl);
+                            hls.startLoad();
                         }
                     });
                 } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-                    videoElement.src = proxyUrl;
-                    videoElement.play().catch(e => {});
+                    videoElement.src = streamUrl;
+                    videoElement.play().catch(e => {
+                        videoElement.src = proxyUrl;
+                        videoElement.play().catch(err => {});
+                    });
                 }
             } else {
-                videoElement.src = proxyUrl;
-                videoElement.play().catch(err => {});
+                videoElement.src = directUrl;
+                videoElement.play().catch(err => {
+                    videoElement.src = proxyUrl;
+                    videoElement.play().catch(e => {});
+                });
             }
         }
 
@@ -324,32 +336,34 @@ def get_streams():
     
     streams = safe_fetch(f"{base_api}&action={action}&category_id={category_id}")
     
+    fallback_token = "HhQKUhFQEA8UVgNWWlALVAdVVFBTVwoNVFcDU1tSAgIDAVsEWl4AUw8SGUQRQEABVQg6DFRACQsDAwwAUklERBZTEGwLXBAPFAQBVlcGBUYYRxEMXQcRAwYeF0IKAUQLRwdTA1UKEBkUVU0SB0ZcBVg6AQBGC1BcFAhbRw8JShMKWD1XB1VTW1ISD0RSFh5GXRYVRwoMRlVaHhdQChEUUBFTQAlACgYFDhIZRAFbRwpAFxxHCkB3YxQeF1cbEQNfFl8NXUACEFgFRQ1EThZbF2sXABZEEFZYW1dHEFlHVhNJFA9SGmdRWlheUAUWXV0KR0dfRwFAHxtbXVtbFwoUbhVfBhFYGgUCBQMXGw=="
+
     parsed_results = []
     if isinstance(streams, list):
         for ch in streams:
             if ch.get("stream_id"):
                 s_id = ch.get("stream_id")
-                # التقاط وإرسال أي بارامترات حماية إضافية يرسلها الـ API تلقائياً
-                token = ch.get("token", "")
+                token = ch.get("token", fallback_token)
                 
                 if stream_type == 'live':
                     ext = ch.get("container_extension", "m3u8")
-                    proxy_url = f"/proxy?type=live&id={s_id}&ext={ext}"
+                    # الرابط المباشر المطابق للرابط الناجح تماماً
+                    direct_url = f"{host}/live/{username}/{password}/{s_id}.{ext}?token={token}"
+                    proxy_url = f"/proxy?type=live&id={s_id}&ext={ext}&token={token}"
                 else:
                     ext = ch.get("container_extension", "mp4")
+                    direct_url = f"{host}/movie/{username}/{password}/{s_id}.{ext}"
                     proxy_url = f"/proxy?type=movie&id={s_id}&ext={ext}"
-                
-                if token:
-                    proxy_url += f"&token={token}"
                 
                 parsed_results.append({
                     "name": ch.get("name"),
+                    "direct_url": direct_url,
                     "proxy_url": proxy_url
                 })
     return jsonify(parsed_results)
 
 # -------------------------------------------------------------
-# 4. محرك البروكسي المطور (يدعم تمرير التوكين المشفر بالكامل)
+# 4. محرك البروكسي (كخيار احتياطي ومطور)
 # -------------------------------------------------------------
 @app.route('/proxy')
 def proxy_stream():
@@ -362,15 +376,10 @@ def proxy_stream():
 
     stream_type = request.args.get('type') 
     stream_id = request.args.get('id')
-    ext = request.args.get('ext')
+    ext = request.args.get('ext', 'm3u8' if stream_type == 'live' else 'mp4')
 
-    if not ext:
-        ext = 'm3u8' if stream_type == 'live' else 'mp4'
-
-    # بناء الرابط الأساسي المتوافق مع Xtream
     target_url = f"{host}/{stream_type}/{username}/{password}/{stream_id}.{ext}"
 
-    # جمع كافة المتغيرات الإضافية الممررة (مثل token والـ الأرقام الملحقة) وإعادة إرفاقها بدقة
     all_args = request.args.to_dict()
     for key in ['type', 'id', 'ext']:
         all_args.pop(key, None)
@@ -378,13 +387,8 @@ def proxy_stream():
     if all_args:
         param_pairs = [f"{k}={v}" for k, v in all_args.items()]
         target_url += "?" + "&".join(param_pairs)
-    else:
-        # إذا لم يرسل الـ API توكن، نقوم بسحب التوكن التجريبي الذي أرسلته لدمجه احتياطياً للسيرفر المحمي
-        fallback_token = "HhQKUhFQEA8UVgNWWlALVAdVVFBTVwoNVFcDU1tSAgIDAVsEWl4AUw8SGUQRQEABVQg6DFRACQsDAwwAUklERBZTEGwLXBAPFAQBVlcGBUYYRxEMXQcRAwYeF0IKAUQLRwdTA1UKEBkUVU0SB0ZcBVg6AQBGC1BcFAhbRw8JShMKWD1XB1VTW1ISD0RSFh5GXRYVRwoMRlVaHhdQChEUUBFTQAlACgYFDhIZRAFbRwpAFxxHCkB3YxQeF1cbEQNfFl8NXUACEFgFRQ1EThZbF2sXABZEEFZYW1dHEFlHVhNJFA9SGmdRWlheUAUWXV0KR0dfRwFAHxtbXVtbFwoUbhVfBhFYGgUCBQMXGw=="
-        target_url += f"?token={fallback_token}"
 
     try:
-        # إرسال الطلب للسيرفر الأصلي مع تفعيل الـ streaming وحجم بافر مناسب
         req = http_session.get(target_url, stream=True, timeout=15, headers=HEADERS)
         
         def stream_video():
