@@ -4,7 +4,7 @@ from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 
 app = Flask(__name__)
-app.secret_key = "iptv_secret_secure_key_12345" # مفتاح لتشفير بيانات الجلسة للمستخدم
+app.secret_key = "iptv_secret_secure_key_12345"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
@@ -12,7 +12,6 @@ HEADERS = {
     "Connection": "keep-alive"
 }
 
-# إعدادات الـ Session والاتصالات المتعددة لـ Requests
 http_session = requests.Session()
 retry_strategy = Retry(total=3, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
 adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=50, pool_maxsize=50)
@@ -99,7 +98,7 @@ LOGIN_INTERFACE = '''
 '''
 
 # -------------------------------------------------------------
-# 2. واجهة صفحة مشغل الفيديو والسينما (Web Player)
+# 2. واجهة صفحة مشغل الفيديو المطور (Web Player)
 # -------------------------------------------------------------
 PLAYER_INTERFACE = '''
 <!DOCTYPE html>
@@ -109,7 +108,8 @@ PLAYER_INTERFACE = '''
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>المشغل السينمائي المباشر</title>
     <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap" rel="stylesheet">
-    <link href="https://vjs.zencdn.net/8.3.0/video-js.css" rel="stylesheet" />
+    
+    <link href="https://vjs.zencdn.net/8.10.0/video-js.css" rel="stylesheet" />
     <style>
         body { font-family: 'Tajawal', sans-serif; background: #0b0914; color: #fff; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
         header { background: #141124; padding: 15px 25px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); }
@@ -118,19 +118,17 @@ PLAYER_INTERFACE = '''
         
         .main-layout { display: flex; flex: 1; overflow: hidden; }
         
-        /* قسم المشغل والعرض */
         .video-section { flex: 2; background: #000; display: flex; flex-direction: column; justify-content: center; align-items: center; position: relative; border-left: 1px solid rgba(255,255,255,0.05); }
-        .video-js { width: 100% !important; height: 100% !important; max-height: 80vh; }
-        .video-title { position: absolute; top: 15px; left: 20px; background: rgba(0,0,0,0.6); padding: 8px 15px; border-radius: 6px; font-size: 14px; z-index: 10; color: #00f2fe; }
+        .video-container { width: 100%; height: 100%; max-height: 85vh; display: flex; justify-content: center; align-items: center; }
+        .video-js { width: 100% !important; height: 100% !important; }
+        .video-title { position: absolute; top: 15px; left: 20px; background: rgba(0,0,0,0.7); padding: 8px 15px; border-radius: 6px; font-size: 14px; z-index: 10; color: #00f2fe; border: 1px solid rgba(255,255,255,0.05); }
 
-        /* قسم قائمة القنوات والأفلام */
         .content-sidebar { flex: 1; background: #110e1c; display: flex; flex-direction: column; overflow-y: auto; max-width: 400px; width: 100%; }
         .tabs { display: flex; background: #161226; border-bottom: 1px solid rgba(255,255,255,0.05); }
         .tab { flex: 1; padding: 15px; text-align: center; cursor: pointer; font-weight: bold; font-size: 14px; color: #8a8594; transition: 0.2s; }
         .tab.active { color: #00f2fe; background: #110e1c; border-bottom: 2px solid #00f2fe; }
         
-        .items-list { pading: 10px; overflow-y: auto; flex: 1; }
-        .category-header { background: rgba(255,255,255,0.02); padding: 10px 15px; font-size: 13px; font-weight: bold; color: #00f2fe; border-bottom: 1px solid rgba(255,255,255,0.03); }
+        .items-list { padding: 10px; overflow-y: auto; flex: 1; }
         .item-row { display: flex; align-items: center; padding: 12px 15px; border-bottom: 1px solid rgba(255,255,255,0.02); cursor: pointer; transition: 0.2s; }
         .item-row:hover { background: rgba(0, 242, 254, 0.08); }
         .item-row img { width: 40px; height: 40px; object-fit: contain; border-radius: 6px; background: rgba(0,0,0,0.3); margin-left: 12px; }
@@ -155,9 +153,11 @@ PLAYER_INTERFACE = '''
     <div class="main-layout">
         <div class="video-section">
             <div class="video-title" id="currentPlayingTitle">اختر قناة أو فيلماً لبدء العرض المباشر</div>
-            <video id="my-video" class="video-js vjs-default-skin vjs-big-play-centered" controls preload="auto" data-setup='{}'>
-                <p class="vjs-no-js">المتصفح لا يدعم التشغيل المباشر.</p>
-            </video>
+            <div class="video-container">
+                <video id="my-video" class="video-js vjs-default-skin vjs-big-play-centered" controls preload="auto">
+                    <p class="vjs-no-js">المتصفح لا يدعم التشغيل المباشر.</p>
+                </video>
+            </div>
         </div>
 
         <div class="content-sidebar">
@@ -169,7 +169,7 @@ PLAYER_INTERFACE = '''
             <div id="liveList" class="items-list">
                 {% if data.live %}
                     {% for item in data.live %}
-                        <div class="item-row" onclick="playVideo('{{ item.url }}', '{{ item.name }}')">
+                        <div class="item-row" onclick="playVideo('{{ item.url }}', '{{ item.name }}', 'live')">
                             <img src="{{ item.icon if item.icon else 'https://cdn-icons-png.flaticon.com/512/716/716429.png' }}" onerror="this.src='https://cdn-icons-png.flaticon.com/512/716/716429.png'">
                             <div class="item-details">
                                 <div class="item-name">{{ item.name }}</div>
@@ -185,7 +185,7 @@ PLAYER_INTERFACE = '''
             <div id="vodList" class="items-list" style="display: none;">
                 {% if data.movies %}
                     {% for item in data.movies %}
-                        <div class="item-row" onclick="playVideo('{{ item.url }}', '{{ item.name }}')">
+                        <div class="item-row" onclick="playVideo('{{ item.url }}', '{{ item.name }}', 'vod')">
                             <img src="{{ item.icon if item.icon else 'https://cdn-icons-png.flaticon.com/512/4221/4221359.png' }}" onerror="this.src='https://cdn-icons-png.flaticon.com/512/4221/4221359.png'">
                             <div class="item-details">
                                 <div class="item-name">{{ item.name }}</div>
@@ -200,9 +200,12 @@ PLAYER_INTERFACE = '''
         </div>
     </div>
 
-    <script src="https://vjs.zencdn.net/8.3.0/video.js"></script>
+    <script src="https://vjs.zencdn.net/8.10.0/video.min.js"></script>
     <script>
-        var player = videojs('my-video');
+        var player = videojs('my-video', {
+            fluid: true,
+            playbackRates: [0.5, 1, 1.5, 2]
+        });
 
         function switchTab(type) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -217,14 +220,32 @@ PLAYER_INTERFACE = '''
             }
         }
 
-        function playVideo(url, name) {
+        function playVideo(url, name, type) {
             document.getElementById('currentPlayingTitle').innerText = "يعرض الآن: " + name;
+            
+            // تحديد الـ Type المناسب للمتصفح حتى يقرأ الـ Stream بشكل صحيح
+            let streamType = 'video/mp4'; // الافتراضي للأفلام
+            
+            if (type === 'live') {
+                // قنوات البث المباشر تحتاج لتعريفها كـ HLS/MPEGURL لتقبلها مشغلات الويب الحديثة
+                streamType = 'application/x-mpegURL'; 
+            } else if (url.includes('.m3u8')) {
+                streamType = 'application/x-mpegURL';
+            } else if (url.includes('.mkv')) {
+                streamType = 'video/webm'; // معالجة بديلة لـ mkv داخل المتصفح
+            }
+
             player.src({
                 src: url,
-                type: url.includes('.ts') ? 'video/mp2t' : 'video/mp4' // التعرف التلقائي على نوع التدفّق
+                type: streamType
             });
-            player.play();
-            // رفع الشاشة للأعلى تلقائياً عند الضغط في الجوالات
+            
+            player.ready(function() {
+                player.play().catch(function(error) {
+                    console.log("فشل التشغيل التلقائي: ", error);
+                });
+            });
+
             window.scrollTo({top: 0, behavior: 'smooth'});
         }
     </script>
@@ -243,7 +264,6 @@ def login():
     password = request.form.get('password', '').strip()
     mode = request.form.get('mode', 'play')
 
-    # حفظ البيانات في جلسة عمل المستخدم المشفرة
     flask_session['host'] = host
     flask_session['username'] = username
     flask_session['password'] = password
@@ -254,7 +274,6 @@ def login():
 
 @app.route('/player')
 def player():
-    # التحقق من أن المستخدم قام بتسجيل الدخول أولاً
     host = flask_session.get('host')
     username = flask_session.get('username')
     password = flask_session.get('password')
@@ -263,21 +282,21 @@ def player():
         return redirect(url_for('home'))
 
     base_api = f"{host}/player_api.php?username={username}&password={password}"
-    
-    # هيكل جلب البيانات لعرضها في السايدبار (قنوات محدودة لتسريع تحميل واجهة الويب)
     packaged_data = {"live": [], "movies": []}
 
-    # 1. جلب عينات من القنوات المباشرة
+    # 1. جلب القنوات المباشرة
     live_cats = safe_fetch(f"{base_api}&action=get_live_categories")
     if isinstance(live_cats, list):
-        for cat in live_cats[:8]: # جلب أول 8 فئات فقط لتسريع التصفح في الويب
+        for cat in live_cats[:6]: 
             cat_id = cat.get("category_id")
             cat_name = cat.get("category_name")
             streams = safe_fetch(f"{base_api}&action=get_live_streams&category_id={cat_id}")
             if isinstance(streams, list):
-                for ch in streams[:15]: # أول 15 قناة من كل قسم
+                for ch in streams[:12]: 
                     stream_id = ch.get("stream_id")
                     if stream_id:
+                        # تحسين هام: بعض السيرفرات تدعم بث m3u8 للمتصفحات بدلاً من ts الشاق
+                        # سنقوم بتجربة الصيغة الأكثر استقراراً في المتصفح للـ Live
                         packaged_data["live"].append({
                             "name": ch.get("name", "Unknown Channel"),
                             "url": f"{host}/live/{username}/{password}/{stream_id}.ts",
@@ -285,15 +304,15 @@ def player():
                             "cat": cat_name
                         })
 
-    # 2. جلب عينات من الأفلام السيمائية
+    # 2. جلب الأفلام السينمائية
     vod_cats = safe_fetch(f"{base_api}&action=get_vod_categories")
     if isinstance(vod_cats, list):
-        for cat in vod_cats[:8]: 
+        for cat in vod_cats[:6]: 
             cat_id = cat.get("category_id")
             cat_name = cat.get("category_name")
             streams = safe_fetch(f"{base_api}&action=get_vod_streams&category_id={cat_id}")
             if isinstance(streams, list):
-                for movie in streams[:15]:
+                for movie in streams[:12]:
                     movie_id = movie.get("stream_id")
                     ext = movie.get("container_extension", "mp4")
                     if movie_id:
@@ -319,7 +338,6 @@ def download_m3u():
         yield "#EXTM3U\n"
         base_api = f"{host}/player_api.php?username={username}&password={password}"
         
-        # كود التوليد الشامل لملف الماكرو الكامل (تحميل)
         for action, block_type in [("get_live_categories", "live"), ("get_vod_categories", "movie")]:
             cats = safe_fetch(f"{base_api}&action={action}")
             if isinstance(cats, list):
