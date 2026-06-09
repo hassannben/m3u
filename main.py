@@ -201,17 +201,33 @@ PLAYER_INTERFACE = '''
                     hls = new Hls({
                         enableWorker: true,
                         lowLatencyMode: true,
-                        maxBufferLength: 8
+                        maxBufferLength: 8,
+                        // تفعيل إرسال بيانات الاعتماد والـ Cookies عبر الكروس دومين إذا لزم الأمر
+                        xhrSetup: function (xhr, url) {
+                            xhr.withCredentials = false;
+                        }
                     });
                     hls.loadSource(proxyUrl);
                     hls.attachMedia(videoElement);
                     hls.on(Hls.Events.MANIFEST_PARSED, function() {
-                        videoElement.play().catch(e => console.log(e));
+                        videoElement.play().catch(e => console.log("Play interrupted:", e));
                     });
                     hls.on(Hls.Events.ERROR, function(event, data) {
                         if (data.fatal) {
-                            videoElement.src = proxyUrl;
-                            videoElement.play().catch(e => console.log(e));
+                            switch (data.type) {
+                                case Hls.ErrorTypes.NETWORK_ERROR:
+                                    console.log("Network error encountered, trying to recover...");
+                                    hls.startLoad();
+                                    break;
+                                case Hls.ErrorTypes.MEDIA_ERROR:
+                                    console.log("Media error encountered, trying to recover...");
+                                    hls.recoverMediaError();
+                                    break;
+                                default:
+                                    videoElement.src = proxyUrl;
+                                    videoElement.play().catch(e => console.log(e));
+                                    break;
+                            }
                         }
                     });
                 } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
@@ -290,7 +306,7 @@ def player():
     return render_template_string(PLAYER_INTERFACE, data=packaged_data)
 
 # -------------------------------------------------------------
-# 4. محرك البروكسي (Proxy Engine) تحويل تلقائي إلى m3u8
+# 4. محرك البروكسي المطور (تعديل استراتيجي لدعم الـ CORS وتمرير الـ Token)
 # -------------------------------------------------------------
 @app.route('/proxy')
 def proxy_stream():
@@ -308,17 +324,38 @@ def proxy_stream():
     if stream_type == 'live' and ext == 'ts':
         ext = 'm3u8'
 
+    # بناء الرابط الأساسي الموجه للسيرفر
     target_url = f"{host}/{stream_type}/{username}/{password}/{stream_id}.{ext}"
 
+    # سحب البارامترات الكاملة القادمة من المتصفح (مثل الـ token) لإلحاقها بالطلب
+    all_args = request.args.to_dict()
+    # إزالة بارامترات التحكم بالبروكسي لكي لا تتداخل مع طلب السيرفر
+    for key in ['type', 'id', 'ext']:
+        all_args.pop(key, None)
+        
+    # إذا كانت هناك بارامترات إضافية (توكن حماية)، ندمجها بالرابط
+    if all_args:
+        param_pairs = [f"{k}={v}" for k, v in all_args.items()]
+        target_url += "?" + "&".join(param_pairs)
+
     try:
-        req = http_session.get(target_url, stream=True, timeout=15)
+        # إرسال الطلب مع إضافة الـ Headers الأصلية لضمان عدم الكشف من الـ Firewall
+        req = http_session.get(target_url, stream=True, timeout=15, headers=HEADERS)
         
         def stream_video():
             for chunk in req.iter_content(chunk_size=1024*64): 
                 if chunk:
                     yield chunk
 
-        return Response(stream_video(), content_type=req.headers.get('Content-Type', 'application/vnd.apple.mpegurl'))
+        # إرجاع رد البث مع تحديد الـ Content-Type الذي يحتاجه المتصفح بدقة
+        response = Response(stream_video(), content_type=req.headers.get('Content-Type', 'application/vnd.apple.mpegurl'))
+        
+        # حقن رؤسيات الـ CORS لضمان قراءة ملفات الدفق (m3u8/ts Chunks) عبر مكتبة Hls.js بنجاح
+        response.headers['Access-Control-Allow-Origin'] = '*'
+        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
+        response.headers['Access-Control-Allow-Headers'] = '*'
+        
+        return response
     except Exception as e:
         return f"فشل البروكسي في سحب دفق الميديا: {e}", 500
 
