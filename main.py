@@ -2,12 +2,14 @@ from flask import Flask, Response, render_template_string, request, redirect, ur
 import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
+import re
 
 app = Flask(__name__)
 app.secret_key = "iptv_secret_secure_key_12345"
 
 HEADERS = {
-    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
+    "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+    "Accept-Encoding": "identity" # نطلب من السيرفر عدم إرسال بيانات مضغوطة لتسهيل القراءة والنظام النصي
 }
 
 http_session = requests.Session()
@@ -88,7 +90,7 @@ LOGIN_INTERFACE = '''
 '''
 
 # -------------------------------------------------------------
-# 2. واجهة المشغل (تصحيح قالب النصوص المتقاطعة كاملاً)
+# 2. واجهة المشغل (Player Interface)
 # -------------------------------------------------------------
 PLAYER_INTERFACE = '''
 <!DOCTYPE html>
@@ -110,8 +112,6 @@ PLAYER_INTERFACE = '''
         .video-title { position: absolute; top: 15px; left: 20px; background: rgba(0,0,0,0.8); padding: 8px 15px; border-radius: 6px; font-size: 14px; z-index: 10; color: #00f2fe; border: 1px solid rgba(255,255,255,0.05); }
         .content-sidebar { flex: 1; background: #110e1c; display: flex; flex-direction: column; overflow-y: auto; max-width: 400px; width: 100%; border-left: 1px solid rgba(255,255,255,0.05); }
         .tabs { display: flex; background: #161226; border-bottom: 1px solid rgba(255,255,255,0.05); }
-        
-        /* هذا هو السطر 364 الذي تم إصلاحه وتأمينه برمجياً داخل النص الاستاتيكي */
         .tab { flex: 1; padding: 15px; text-align: center; cursor: pointer; font-weight: bold; color: #8a8594; }
         .tab.active { color: #00f2fe; background: #110e1c; border-bottom: 2px solid #00f2fe; }
         
@@ -237,39 +237,46 @@ PLAYER_INTERFACE = '''
             document.getElementById('currentPlayingTitle').innerText = "يعرض الآن: " + name;
             if (hls) { hls.destroy(); hls = null; }
 
-            var streamUrl = directUrl;
+            var streamUrl = proxyUrl; // تشغيل البروكسي لإصلاح جدار الحماية
 
             if (type === 'live') {
                 if (Hls.isSupported()) {
                     hls = new Hls({
                         enableWorker: true,
                         lowLatencyMode: true,
-                        maxBufferLength: 15,
-                        maxMaxBufferLength: 30
+                        maxBufferLength: 30,
+                        maxMaxBufferLength: 60,
+                        xhrSetup: function(xhr, url) {
+                            xhr.withCredentials = false;
+                        }
                     });
                     hls.loadSource(streamUrl);
                     hls.attachMedia(videoElement);
                     hls.on(Hls.Events.MANIFEST_PARSED, function() { videoElement.play().catch(e => {}); });
                     
                     hls.on(Hls.Events.ERROR, function(event, data) {
-                        if (data.fatal && streamUrl === directUrl) {
-                            console.log("Direct url restricted, switching to proxy channel...");
-                            streamUrl = proxyUrl;
-                            hls.loadSource(streamUrl);
-                            hls.startLoad();
+                        if (data.fatal) {
+                            if (streamUrl === proxyUrl) {
+                                console.log("Fallback to direct URL...");
+                                streamUrl = directUrl;
+                                hls.loadSource(streamUrl);
+                                hls.startLoad();
+                            } else {
+                                hls.recoverMediaError();
+                            }
                         }
                     });
                 } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
                     videoElement.src = streamUrl;
                     videoElement.play().catch(e => {
-                        videoElement.src = proxyUrl;
+                        videoElement.src = directUrl;
                         videoElement.play().catch(err => {});
                     });
                 }
             } else {
-                videoElement.src = directUrl;
+                videoElement.src = proxyUrl;
                 videoElement.play().catch(err => {
-                    videoElement.src = proxyUrl;
+                    videoElement.src = directUrl;
                     videoElement.play().catch(e => {});
                 });
             }
@@ -282,7 +289,7 @@ PLAYER_INTERFACE = '''
 '''
 
 # -------------------------------------------------------------
-# 3. دالات التحكم والتحقق الخلفي (Backend Control)
+# 3. محاور التحكم الخلفية (Backend Routes)
 # -------------------------------------------------------------
 @app.route('/')
 def home():
@@ -333,7 +340,6 @@ def get_streams():
     action = "get_live_streams" if stream_type == "live" else "get_vod_streams"
     
     streams = safe_fetch(f"{base_api}&action={action}&category_id={category_id}")
-    
     fallback_token = "HhQKUhFQEA8UVgNWWlALVAdVVFBTVwoNVFcDU1tSAgIDAVsEWl4AUw8SGUQRQEABVQg6DFRACQsDAwwAUklERBZTEGwLXBAPFAQBVlcGBUYYRxEMXQcRAwYeF0IKAUQLRwdTA1UKEBkUVU0SB0ZcBVg6AQBGC1BcFAhbRw8JShMKWD1XB1VTW1ISD0RSFh5GXRYVRwoMRlVaHhdQChEUUBFTQAlACgYFDhIZRAFbRwpAFxxHCkB3YxQeF1cbEQNfFl8NXUACEFgFRQ1EThZbF2sXABZEEFZYW1dHEFlHVhNJFA9SGmdRWlheUAUWXV0KR0dfRwFAHxtbXVtbFwoUbhVfBhFYGgUCBQMXGw=="
 
     parsed_results = []
@@ -346,11 +352,11 @@ def get_streams():
                 if stream_type == 'live':
                     ext = ch.get("container_extension", "m3u8")
                     direct_url = f"{host}/live/{username}/{password}/{s_id}.{ext}?token={token}"
-                    proxy_url = f"/proxy?type=live&id={s_id}&ext={ext}&token={token}"
+                    proxy_url = f"/proxy/live/{s_id}.{ext}?token={token}"
                 else:
                     ext = ch.get("container_extension", "mp4")
                     direct_url = f"{host}/movie/{username}/{password}/{s_id}.{ext}"
-                    proxy_url = f"/proxy?type=movie&id={s_id}&ext={ext}"
+                    proxy_url = f"/proxy/movie/{s_id}.{ext}"
                 
                 parsed_results.append({
                     "name": ch.get("name"),
@@ -360,51 +366,43 @@ def get_streams():
     return jsonify(parsed_results)
 
 # -------------------------------------------------------------
-# 4. محرك البروكسي (الاحتياطي المكتمل للكسر والتخطي السحابي)
+# 4. محرك البروكسي الشامل مع ميزة فك الضغط التلقائي للـ m3u8
 # -------------------------------------------------------------
-@app.route('/proxy')
-def proxy_stream():
+@app.route('/proxy/<path:stream_path>')
+def proxy_stream(stream_path):
     host = flask_session.get('host')
-    username = flask_session.get('username')
-    password = flask_session.get('password')
+    target_url = f"{host}/{stream_path}"
+    if request.query_string: target_url += f"?{request.query_string.decode('utf-8')}"
     
-    if not host:
-        return "غير مصرح لك بالوصول", 403
-
-    stream_type = request.args.get('type') 
-    stream_id = request.args.get('id')
-    ext = request.args.get('ext', 'm3u8' if stream_type == 'live' else 'mp4')
-
-    target_url = f"{host}/{stream_type}/{username}/{password}/{stream_id}.{ext}"
-
-    all_args = request.args.to_dict()
-    for key in ['type', 'id', 'ext']:
-        all_args.pop(key, None)
-        
-    if all_args:
-        param_pairs = [f"{k}={v}" for k, v in all_args.items()]
-        target_url += "?" + "&".join(param_pairs)
+    # 1. نسخ الـ Headers من المتصفح الأصلي للبروكسي
+    headers = {
+        "User-Agent": request.headers.get('User-Agent', HEADERS['User-Agent']),
+        "Referer": host + "/",
+        "Origin": host
+    }
 
     try:
-        req = http_session.get(target_url, stream=True, timeout=15, headers=HEADERS)
+        req = requests.get(target_url, headers=headers, stream=True, timeout=15)
         
-        def stream_video():
-            for chunk in req.iter_content(chunk_size=1024*128): 
-                if chunk:
-                    yield chunk
-
-        content_type = 'application/x-mpegURL' if stream_type == 'live' else req.headers.get('Content-Type', 'video/mp4')
+        # 2. إذا كان ملف m3u8، نقوم بتعديله وتمريره
+        if '.m3u8' in stream_path:
+            content = req.text
+            # استبدال روابط الـ ts لتمر عبر البروكسي
+            fixed_content = re.sub(r'([^\s\n\r]+\.ts)', lambda m: f"/proxy/{stream_path.rsplit('/', 1)[0]}/{m.group(1)}", content)
+            response = Response(fixed_content, content_type='application/x-mpegURL')
+        else:
+            # 3. تمرير ملفات الفيديو (ts) كما هي مع كافة رؤوس الاستجابة الأصلية
+            response = Response(req.iter_content(chunk_size=1024*512), 
+                                content_type=req.headers.get('Content-Type', 'video/mp2t'),
+                                status=req.status_code)
         
-        response = Response(stream_video(), content_type=content_type)
         response.headers['Access-Control-Allow-Origin'] = '*'
-        response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
-        response.headers['Access-Control-Allow-Headers'] = '*'
         return response
     except Exception as e:
-        return f"فشل البروكسي: {e}", 500
+        return str(e), 500
 
 # -------------------------------------------------------------
-# 5. تحميل ملف الـ M3U الكامل
+# 5. تحميل ملف الـ M3U
 # -------------------------------------------------------------
 @app.route('/download')
 def download_m3u():
