@@ -36,7 +36,7 @@ LOGIN_INTERFACE = '''
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IPTV Portal Pro</title>
-    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght=400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Tajawal', sans-serif; background: linear-gradient(135deg, #09090e 0%, #150f24 100%); color: #fff; min-height: 100vh; margin: 0; display: flex; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box; }
         .card { background: rgba(22, 17, 39, 0.7); backdrop-filter: blur(20px); width: 100%; max-width: 440px; border-radius: 24px; padding: 40px; border: 1px solid rgba(255,255,255,0.06); box-shadow: 0 20px 50px rgba(0,0,0,0.5); text-align: center; }
@@ -88,7 +88,7 @@ LOGIN_INTERFACE = '''
 '''
 
 # -------------------------------------------------------------
-# 2. واجهة مشغل الـ IPTV والسينما المحدثة (تعتمد على الفئات الديناميكية)
+# 2. واجهة مشغل الـ IPTV والسينما
 # -------------------------------------------------------------
 PLAYER_INTERFACE = '''
 <!DOCTYPE html>
@@ -151,9 +151,7 @@ PLAYER_INTERFACE = '''
 
             <div class="list-container">
                 <div id="backButton" class="back-btn" onclick="showCategories()">🔙 العودة لقائمة الفئات الرئيسيّة</div>
-                
                 <div id="categoriesContainer"></div>
-                
                 <div id="itemsContainer" class="items-list"></div>
             </div>
         </div>
@@ -165,7 +163,6 @@ PLAYER_INTERFACE = '''
         var hls = null;
         var currentTab = 'live';
         
-        // تمرير الفئات المجلوبة من خادم Flask مباشرة للـ JavaScript
         var liveCategories = {{ data.live_cats|tojson }};
         var vodCategories = {{ data.vod_cats|tojson }};
 
@@ -240,11 +237,25 @@ PLAYER_INTERFACE = '''
 
             if (type === 'live') {
                 if (Hls.isSupported()) {
-                    hls = new Hls({ enableWorker: true, lowLatencyMode: true, maxBufferLength: 8 });
+                    hls = new Hls({
+                        enableWorker: true,
+                        lowLatencyMode: true,
+                        maxBufferLength: 15,
+                        maxMaxBufferLength: 30
+                    });
                     hls.loadSource(proxyUrl);
                     hls.attachMedia(videoElement);
                     hls.on(Hls.Events.MANIFEST_PARSED, function() { videoElement.play().catch(e => {}); });
-                } else {
+                    hls.on(Hls.Events.ERROR, function(event, data) {
+                        if (data.fatal) {
+                            if (data.type === Hls.ErrorTypes.NETWORK_ERROR) {
+                                hls.startLoad();
+                            } else if (data.type === Hls.ErrorTypes.MEDIA_ERROR) {
+                                hls.recoverMediaError();
+                            }
+                        }
+                    });
+                } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
                     videoElement.src = proxyUrl;
                     videoElement.play().catch(e => {});
                 }
@@ -254,7 +265,6 @@ PLAYER_INTERFACE = '''
             }
         }
 
-        // تشغيل البناء الأولي عند فتح الصفحة
         showCategories();
     </script>
 </body>
@@ -289,7 +299,6 @@ def player():
 
     base_api = f"{host}/player_api.php?username={username}&password={password}"
     
-    # جلب الفئات فقط (سريع جداً ولا يتعدى 1 ثانية) مرسل للواجهة مباشرة بدون قيود
     live_cats = safe_fetch(f"{base_api}&action=get_live_categories") or []
     vod_cats = safe_fetch(f"{base_api}&action=get_vod_categories") or []
 
@@ -299,7 +308,6 @@ def player():
     }
     return render_template_string(PLAYER_INTERFACE, data=packaged_data)
 
-# نقطة اتصال فرعية لجلب القنوات بشكل منفصل عند نقر الفئة (On-Demand)
 @app.route('/get_streams')
 def get_streams():
     host = flask_session.get('host')
@@ -320,8 +328,10 @@ def get_streams():
     if isinstance(streams, list):
         for ch in streams:
             if ch.get("stream_id"):
+                # تمرير الامتداد بشكل ديناميكي دون فرضه ثابتاً ليتوافق مع بنية السيرفر المحمي
                 if stream_type == 'live':
-                    proxy_url = f"/proxy?type=live&id={ch.get('stream_id')}"
+                    ext = ch.get("container_extension", "m3u8")
+                    proxy_url = f"/proxy?type=live&id={ch.get('stream_id')}&ext={ext}"
                 else:
                     ext = ch.get("container_extension", "mp4")
                     proxy_url = f"/proxy?type=movie&id={ch.get('stream_id')}&ext={ext}"
@@ -333,7 +343,7 @@ def get_streams():
     return jsonify(parsed_results)
 
 # -------------------------------------------------------------
-# 4. محرك البروكسي المطور
+# 4. محرك البروكسي المطور (اصلاح بنية امتداد M3U ورؤوس التعرف الحية)
 # -------------------------------------------------------------
 @app.route('/proxy')
 def proxy_stream():
@@ -346,11 +356,13 @@ def proxy_stream():
 
     stream_type = request.args.get('type') 
     stream_id = request.args.get('id')
-    ext = request.args.get('ext', 'ts' if stream_type == 'live' else 'mp4')
+    ext = request.args.get('ext')
 
-    if stream_type == 'live' and ext == 'ts':
-        ext = 'm3u8'
+    # ضبط تلقائي للامتداد بناءً على نوع البث الفعلي الذي يدعمه السيرفر الخاص بك
+    if not ext:
+        ext = 'm3u8' if stream_type == 'live' else 'mp4'
 
+    # بناء الرابط المطابق تماماً للرابط التجريبي الذي يعمل بنجاح
     target_url = f"{host}/{stream_type}/{username}/{password}/{stream_id}.{ext}"
 
     all_args = request.args.to_dict()
@@ -365,11 +377,14 @@ def proxy_stream():
         req = http_session.get(target_url, stream=True, timeout=15, headers=HEADERS)
         
         def stream_video():
-            for chunk in req.iter_content(chunk_size=1024*64): 
+            for chunk in req.iter_content(chunk_size=1024*128): # رفع حجم الدفعة لتسريع البث المباشر
                 if chunk:
                     yield chunk
 
-        response = Response(stream_video(), content_type=req.headers.get('Content-Type', 'application/vnd.apple.mpegurl'))
+        # فرض الـ Content-Type لملفات البث المباشر m3u8 ليفهمها المتصفح ومكتبة hls
+        content_type = 'application/x-mpegURL' if stream_type == 'live' else req.headers.get('Content-Type', 'video/mp4')
+        
+        response = Response(stream_video(), content_type=content_type)
         response.headers['Access-Control-Allow-Origin'] = '*'
         response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = '*'
@@ -399,7 +414,7 @@ def download_m3u():
                         for item in streams:
                             s_id = item.get("stream_id")
                             if s_id:
-                                ext = "m3u8" if block_type == "live" else item.get("container_extension", "mp4")
+                                ext = item.get("container_extension", "m3u8" if block_type == "live" else "mp4")
                                 yield f'#EXTINF:-1 group-title="{cat.get("category_name")}",{item.get("name")}\n'
                                 yield f"{host}/{block_type}/{username}/{password}/{s_id}.{ext}\n"
 
