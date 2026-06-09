@@ -20,7 +20,7 @@ http_session.headers.update(HEADERS)
 
 def safe_fetch(url):
     try:
-        response = http_session.get(url, timeout=10)
+        response = http_session.get(url, timeout=15) # رفع المهلة قليلاً لضمان جلب البيانات الضخمة
         if response.status_code == 200:
             return response.json()
     except:
@@ -76,7 +76,7 @@ LOGIN_INTERFACE = '''
             </div>
             <input type="hidden" name="mode" id="formMode" value="play">
         </form>
-        <div class="loading" id="loadStatus">جاري الاتصال بالسيرفر وجلب القنوات...</div>
+        <div class="loading" id="loadStatus">جاري الاتصال بالسيرفر وبناء قائمة القنوات الكاملة... (قد يستغرق لحظات)</div>
     </div>
     <script>
         function setMode(mode) {
@@ -202,7 +202,6 @@ PLAYER_INTERFACE = '''
                         enableWorker: true,
                         lowLatencyMode: true,
                         maxBufferLength: 8,
-                        // تفعيل إرسال بيانات الاعتماد والـ Cookies عبر الكروس دومين إذا لزم الأمر
                         xhrSetup: function (xhr, url) {
                             xhr.withCredentials = false;
                         }
@@ -216,11 +215,9 @@ PLAYER_INTERFACE = '''
                         if (data.fatal) {
                             switch (data.type) {
                                 case Hls.ErrorTypes.NETWORK_ERROR:
-                                    console.log("Network error encountered, trying to recover...");
                                     hls.startLoad();
                                     break;
                                 case Hls.ErrorTypes.MEDIA_ERROR:
-                                    console.log("Media error encountered, trying to recover...");
                                     hls.recoverMediaError();
                                     break;
                                 default:
@@ -276,12 +273,13 @@ def player():
     base_api = f"{host}/player_api.php?username={username}&password={password}"
     packaged_data = {"live": [], "movies": []}
 
+    # 1. جلب كافة الفئات والقنوات المباشرة (تم حذف القيد التكراري تماماً)
     live_cats = safe_fetch(f"{base_api}&action=get_live_categories")
     if isinstance(live_cats, list):
-        for cat in live_cats[:4]: 
+        for cat in live_cats: 
             streams = safe_fetch(f"{base_api}&action=get_live_streams&category_id={cat.get('category_id')}")
             if isinstance(streams, list):
-                for ch in streams[:8]:
+                for ch in streams:
                     if ch.get("stream_id"):
                         packaged_data["live"].append({
                             "name": ch.get("name"),
@@ -289,12 +287,13 @@ def player():
                             "proxy_url": f"/proxy?type=live&id={ch.get('stream_id')}"
                         })
 
+    # 2. جلب كافة فئات وأفلام السينما (تم حذف القيد التكراري تماماً)
     vod_cats = safe_fetch(f"{base_api}&action=get_vod_categories")
     if isinstance(vod_cats, list):
-        for cat in vod_cats[:4]: 
+        for cat in vod_cats: 
             streams = safe_fetch(f"{base_api}&action=get_vod_streams&category_id={cat.get('category_id')}")
             if isinstance(streams, list):
-                for movie in streams[:8]:
+                for movie in streams:
                     if movie.get("stream_id"):
                         ext = movie.get("container_extension", "mp4")
                         packaged_data["movies"].append({
@@ -306,7 +305,7 @@ def player():
     return render_template_string(PLAYER_INTERFACE, data=packaged_data)
 
 # -------------------------------------------------------------
-# 4. محرك البروكسي المطور (تعديل استراتيجي لدعم الـ CORS وتمرير الـ Token)
+# 4. محرك البروكسي المطور
 # -------------------------------------------------------------
 @app.route('/proxy')
 def proxy_stream():
@@ -324,22 +323,17 @@ def proxy_stream():
     if stream_type == 'live' and ext == 'ts':
         ext = 'm3u8'
 
-    # بناء الرابط الأساسي الموجه للسيرفر
     target_url = f"{host}/{stream_type}/{username}/{password}/{stream_id}.{ext}"
 
-    # سحب البارامترات الكاملة القادمة من المتصفح (مثل الـ token) لإلحاقها بالطلب
     all_args = request.args.to_dict()
-    # إزالة بارامترات التحكم بالبروكسي لكي لا تتداخل مع طلب السيرفر
     for key in ['type', 'id', 'ext']:
         all_args.pop(key, None)
         
-    # إذا كانت هناك بارامترات إضافية (توكن حماية)، ندمجها بالرابط
     if all_args:
         param_pairs = [f"{k}={v}" for k, v in all_args.items()]
         target_url += "?" + "&".join(param_pairs)
 
     try:
-        # إرسال الطلب مع إضافة الـ Headers الأصلية لضمان عدم الكشف من الـ Firewall
         req = http_session.get(target_url, stream=True, timeout=15, headers=HEADERS)
         
         def stream_video():
@@ -347,10 +341,8 @@ def proxy_stream():
                 if chunk:
                     yield chunk
 
-        # إرجاع رد البث مع تحديد الـ Content-Type الذي يحتاجه المتصفح بدقة
         response = Response(stream_video(), content_type=req.headers.get('Content-Type', 'application/vnd.apple.mpegurl'))
         
-        # حقن رؤسيات الـ CORS لضمان قراءة ملفات الدفق (m3u8/ts Chunks) عبر مكتبة Hls.js بنجاح
         response.headers['Access-Control-Allow-Origin'] = '*'
         response.headers['Access-Control-Allow-Methods'] = 'GET, OPTIONS'
         response.headers['Access-Control-Allow-Headers'] = '*'
@@ -360,7 +352,7 @@ def proxy_stream():
         return f"فشل البروكسي في سحب دفق الميديا: {e}", 500
 
 # -------------------------------------------------------------
-# 5. قائمة قنوات M3U
+# 5. قائمة قنوات M3U للتحميل الكامل
 # -------------------------------------------------------------
 @app.route('/download')
 def download_m3u():
