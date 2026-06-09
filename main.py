@@ -374,29 +374,22 @@ def proxy_stream(stream_path):
     target_url = f"{host}/{stream_path}"
     if request.query_string: target_url += f"?{request.query_string.decode('utf-8')}"
     
-    # إضافة Headers إضافية لمحاكاة متصفح منزلي
-    headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
-        "Accept": "*/*",
-        "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
-        "Referer": host + "/",
-        "Origin": host
-    }
-
+    # تحسين الهيدرز لتكون نسخة طبق الأصل من طلب المتصفح
+    headers = {key: value for key, value in request.headers if key not in ['Host', 'Content-Length']}
+    
     try:
-        req = requests.get(target_url, headers=headers, stream=True, timeout=20)
+        req = requests.get(target_url, headers=headers, stream=True, timeout=30)
         
-        # 2. إذا كان ملف m3u8، نقوم بتعديله وتمريره
+        # إذا كان الرد ليس 200، قد يكون السيرفر يحتاج إلى token أو حظر الـ IP
+        if req.status_code != 200:
+            return f"Error: Server returned {req.status_code}", req.status_code
+
         if '.m3u8' in stream_path:
-            content = req.text
-            # استبدال روابط الـ ts لتمر عبر البروكسي
-            fixed_content = re.sub(r'([^\s\n\r]+\.ts)', lambda m: f"/proxy/{stream_path.rsplit('/', 1)[0]}/{m.group(1)}", content)
-            response = Response(fixed_content, content_type='application/x-mpegURL')
+            content = req.text.replace(host, "/proxy/" + host.replace("http://", "").replace("https://", ""))
+            response = Response(content, content_type='application/x-mpegURL')
         else:
-            # 3. تمرير ملفات الفيديو (ts) كما هي مع كافة رؤوس الاستجابة الأصلية
             response = Response(req.iter_content(chunk_size=1024*512), 
-                                content_type=req.headers.get('Content-Type', 'video/mp2t'),
-                                status=req.status_code)
+                                content_type=req.headers.get('Content-Type', 'video/mp2t'))
         
         response.headers['Access-Control-Allow-Origin'] = '*'
         return response
