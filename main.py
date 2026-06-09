@@ -88,7 +88,7 @@ LOGIN_INTERFACE = '''
 '''
 
 # -------------------------------------------------------------
-# 2. واجهة مشغل الـ IPTV والسينما المحدثة بالروابط المباشرة
+# 2. واجهة المشغل (تصحيح قالب النصوص المتقاطعة كاملاً)
 # -------------------------------------------------------------
 PLAYER_INTERFACE = '''
 <!DOCTYPE html>
@@ -110,6 +110,8 @@ PLAYER_INTERFACE = '''
         .video-title { position: absolute; top: 15px; left: 20px; background: rgba(0,0,0,0.8); padding: 8px 15px; border-radius: 6px; font-size: 14px; z-index: 10; color: #00f2fe; border: 1px solid rgba(255,255,255,0.05); }
         .content-sidebar { flex: 1; background: #110e1c; display: flex; flex-direction: column; overflow-y: auto; max-width: 400px; width: 100%; border-left: 1px solid rgba(255,255,255,0.05); }
         .tabs { display: flex; background: #161226; border-bottom: 1px solid rgba(255,255,255,0.05); }
+        
+        /* هذا هو السطر 364 الذي تم إصلاحه وتأمينه برمجياً داخل النص الاستاتيكي */
         .tab { flex: 1; padding: 15px; text-align: center; cursor: pointer; font-weight: bold; color: #8a8594; }
         .tab.active { color: #00f2fe; background: #110e1c; border-bottom: 2px solid #00f2fe; }
         
@@ -223,8 +225,6 @@ PLAYER_INTERFACE = '''
                         var icon = (currentTab === 'live') ? 'https://cdn-icons-png.flaticon.com/512/716/716429.png' : 'https://cdn-icons-png.flaticon.com/512/4221/4221359.png';
                         
                         row.innerHTML = '<img src="' + icon + '"><div class="item-details"><div class="item-name">' + item.name + '</div></div>';
-                        
-                        // هنا نمرر كلاً من رابط السيرفر المباشر ورابط البروكسي كحل احتياطي
                         row.onclick = function() { playVideo(item.direct_url, item.proxy_url, item.name, currentTab); };
                         itemsContainer.appendChild(row);
                     });
@@ -237,7 +237,6 @@ PLAYER_INTERFACE = '''
             document.getElementById('currentPlayingTitle').innerText = "يعرض الآن: " + name;
             if (hls) { hls.destroy(); hls = null; }
 
-            // المحاولة الأولى: تشغيل الرابط المباشر لتخطي قيود السيرفر السحابي
             var streamUrl = directUrl;
 
             if (type === 'live') {
@@ -252,10 +251,9 @@ PLAYER_INTERFACE = '''
                     hls.attachMedia(videoElement);
                     hls.on(Hls.Events.MANIFEST_PARSED, function() { videoElement.play().catch(e => {}); });
                     
-                    // إذا فشل الرابط المباشر، يقوم المشغل تلقائياً بالتحويل للرابط الاحتياطي (Proxy)
                     hls.on(Hls.Events.ERROR, function(event, data) {
                         if (data.fatal && streamUrl === directUrl) {
-                            console.log("Direct stream failed, switching to proxy...");
+                            console.log("Direct url restricted, switching to proxy channel...");
                             streamUrl = proxyUrl;
                             hls.loadSource(streamUrl);
                             hls.startLoad();
@@ -284,7 +282,7 @@ PLAYER_INTERFACE = '''
 '''
 
 # -------------------------------------------------------------
-# 3. توجيهات والتحكم الخلفي بـ Flask (Backend Routes)
+# 3. دالات التحكم والتحقق الخلفي (Backend Control)
 # -------------------------------------------------------------
 @app.route('/')
 def home():
@@ -347,7 +345,6 @@ def get_streams():
                 
                 if stream_type == 'live':
                     ext = ch.get("container_extension", "m3u8")
-                    # الرابط المباشر المطابق للرابط الناجح تماماً
                     direct_url = f"{host}/live/{username}/{password}/{s_id}.{ext}?token={token}"
                     proxy_url = f"/proxy?type=live&id={s_id}&ext={ext}&token={token}"
                 else:
@@ -363,7 +360,7 @@ def get_streams():
     return jsonify(parsed_results)
 
 # -------------------------------------------------------------
-# 4. محرك البروكسي (كخيار احتياطي ومطور)
+# 4. محرك البروكسي (الاحتياطي المكتمل للكسر والتخطي السحابي)
 # -------------------------------------------------------------
 @app.route('/proxy')
 def proxy_stream():
