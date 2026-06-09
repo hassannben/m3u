@@ -374,15 +374,17 @@ def proxy_stream(stream_path):
     target_url = f"{host}/{stream_path}"
     if request.query_string: target_url += f"?{request.query_string.decode('utf-8')}"
     
-    # 1. نسخ الـ Headers من المتصفح الأصلي للبروكسي
+    # إضافة Headers إضافية لمحاكاة متصفح منزلي
     headers = {
-        "User-Agent": request.headers.get('User-Agent', HEADERS['User-Agent']),
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/122.0.0.0 Safari/537.36",
+        "Accept": "*/*",
+        "Accept-Language": "en-US,en;q=0.9,ar;q=0.8",
         "Referer": host + "/",
         "Origin": host
     }
 
     try:
-        req = requests.get(target_url, headers=headers, stream=True, timeout=15)
+        req = requests.get(target_url, headers=headers, stream=True, timeout=20)
         
         # 2. إذا كان ملف m3u8، نقوم بتعديله وتمريره
         if '.m3u8' in stream_path:
