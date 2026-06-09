@@ -10,10 +10,10 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
-# إعداد جلسة اتصالات محسنة لمعالجة التدفقات الكبيرة وعمليات الـ Buffering
+# إعداد جلسة اتصالات محسنة لمعالجة التدفقات الكبيرة وعمليات الـ Buffering عبر البروكسي
 http_session = requests.Session()
 retry_strategy = Retry(total=3, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
-adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=100, pool_maxsize=100) # تم رفع القيمة لضمان ثبات البروكسي
+adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=100, pool_maxsize=100)
 http_session.mount('http://', adapter)
 http_session.mount('https://', adapter)
 http_session.headers.update(HEADERS)
@@ -28,7 +28,7 @@ def safe_fetch(url):
     return None
 
 # -------------------------------------------------------------
-# الواجهات الهيكلية للموقع
+# 1. واجهة تسجيل الدخول (Login Interface)
 # -------------------------------------------------------------
 LOGIN_INTERFACE = '''
 <!DOCTYPE html>
@@ -88,6 +88,9 @@ LOGIN_INTERFACE = '''
 </html>
 '''
 
+# -------------------------------------------------------------
+# 2. واجهة مشغل الـ IPTV والسينما (Player Interface)
+# -------------------------------------------------------------
 PLAYER_INTERFACE = '''
 <!DOCTYPE html>
 <html lang="ar" dir="rtl">
@@ -96,7 +99,6 @@ PLAYER_INTERFACE = '''
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>المشغل السينمائي المباشر</title>
     <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap" rel="stylesheet">
-    <link href="https://vjs.zencdn.net/8.10.0/video-js.css" rel="stylesheet" />
     <style>
         body { font-family: 'Tajawal', sans-serif; background: #0b0914; color: #fff; margin: 0; padding: 0; display: flex; flex-direction: column; height: 100vh; }
         header { background: #141124; padding: 15px 25px; display: flex; justify-content: space-between; align-items: center; border-bottom: 1px solid rgba(255,255,255,0.05); }
@@ -104,21 +106,21 @@ PLAYER_INTERFACE = '''
         .logout-btn { background: rgba(255, 59, 48, 0.2); color: #ff3b30; border: 1px solid rgba(255, 59, 48, 0.4); padding: 8px 16px; border-radius: 8px; cursor: pointer; text-decoration: none; font-size: 13px; }
         .main-layout { display: flex; flex: 1; overflow: hidden; }
         .video-section { flex: 2; background: #000; display: flex; flex-direction: column; justify-content: center; align-items: center; position: relative; }
-        .video-container { width: 100%; height: 100%; max-height: 85vh; }
-        .video-js { width: 100% !important; height: 100% !important; }
-        .video-title { position: absolute; top: 15px; left: 20px; background: rgba(0,0,0,0.7); padding: 8px 15px; border-radius: 6px; font-size: 14px; z-index: 10; color: #00f2fe; }
+        .video-container { width: 100%; height: 100%; max-height: 85vh; display: flex; justify-content: center; align-items: center; }
+        video { width: 100%; height: 100%; max-height: 100%; background: #000; outline: none; }
+        .video-title { position: absolute; top: 15px; left: 20px; background: rgba(0,0,0,0.8); padding: 8px 15px; border-radius: 6px; font-size: 14px; z-index: 10; color: #00f2fe; border: 1px solid rgba(255,255,255,0.05); }
         .content-sidebar { flex: 1; background: #110e1c; display: flex; flex-direction: column; overflow-y: auto; max-width: 400px; width: 100%; }
         .tabs { display: flex; background: #161226; border-bottom: 1px solid rgba(255,255,255,0.05); }
         .tab { flex: 1; padding: 15px; text-align: center; cursor: pointer; font-weight: bold; color: #8a8594; }
         .tab.active { color: #00f2fe; background: #110e1c; border-bottom: 2px solid #00f2fe; }
         .items-list { padding: 10px; overflow-y: auto; flex: 1; }
-        .item-row { display: flex; align-items: center; padding: 12px 15px; border-bottom: 1px solid rgba(255,255,255,0.02); cursor: pointer; }
+        .item-row { display: flex; align-items: center; padding: 12px 15px; border-bottom: 1px solid rgba(255,255,255,0.02); cursor: pointer; border-radius: 8px; margin-bottom: 4px; transition: 0.2s; }
         .item-row:hover { background: rgba(0, 242, 254, 0.08); }
-        .item-row img { width: 40px; height: 40px; object-fit: contain; margin-left: 12px; }
+        .item-row img { width: 36px; height: 36px; object-fit: contain; margin-left: 12px; }
         .item-details { text-align: right; }
         .item-name { font-size: 14px; font-weight: 600; color: #eaeaea; }
-        .item-group { font-size: 11px; color: #6f6a7a; }
-        @media (max-width: 768px) { .main-layout { flex-direction: column; } .content-sidebar { max-width: 100%; } .video-section { height: 40vh; } }
+        .item-group { font-size: 11px; color: #6f6a7a; margin-top: 2px; }
+        @media (max-width: 768px) { .main-layout { flex-direction: column; } .content-sidebar { max-width: 100%; } .video-section { height: 40vh; flex: none; } }
     </style>
 </head>
 <body>
@@ -132,7 +134,7 @@ PLAYER_INTERFACE = '''
         <div class="video-section">
             <div class="video-title" id="currentPlayingTitle">اختر قناة أو فيلماً لبدء العرض المباشر</div>
             <div class="video-container">
-                <video id="my-video" class="video-js vjs-default-skin vjs-big-play-centered" controls preload="auto"></video>
+                <video id="my-video" controls autoplay playsinline></video>
             </div>
         </div>
 
@@ -168,9 +170,10 @@ PLAYER_INTERFACE = '''
         </div>
     </div>
 
-    <script src="https://vjs.zencdn.net/8.10.0/video.min.js"></script>
+    <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
     <script>
-        var player = videojs('my-video', { fluid: true });
+        var videoElement = document.getElementById('my-video');
+        var hls = null;
 
         function switchTab(type) {
             document.querySelectorAll('.tab').forEach(t => t.classList.remove('active'));
@@ -188,20 +191,55 @@ PLAYER_INTERFACE = '''
         function playVideo(proxyUrl, name, type) {
             document.getElementById('currentPlayingTitle').innerText = "يعرض الآن: " + name;
             
-            // استخدام streamType متوافق مع Video.js لتشغيل البث الحي والأفلام بسلاسة
-            let streamType = (type === 'live') ? 'video/mp2t' : 'video/mp4';
+            // تدمير أي تيار بث حي قديم لتفريغ الذاكرة المؤقتة (Buffer)
+            if (hls) {
+                hls.destroy();
+                hls = null;
+            }
 
-            player.src({
-                src: proxyUrl,
-                type: streamType
-            });
-            player.play().catch(err => console.log("خطأ في التشغيل: ", err));
+            if (type === 'live') {
+                // تفعيل مكتبة Hls.js لفك تشفير دفق الـ TS القادم من البروكسي
+                if (Hls.isSupported()) {
+                    hls = new Hls({
+                        enableWorker: true,
+                        lowLatencyMode: true,
+                        maxBufferLength: 8
+                    });
+                    hls.loadSource(proxyUrl);
+                    hls.attachMedia(videoElement);
+                    hls.on(Hls.Events.MANIFEST_PARSED, function() {
+                        videoElement.play().catch(e => console.log("تحذير التشغيل التلقائي المكتوم:", e));
+                    });
+                    hls.on(Hls.Events.ERROR, function(event, data) {
+                        if (data.fatal) {
+                            // تراجع اضطراري في حال فشل المعالجة المتقدمة
+                            videoElement.src = proxyUrl;
+                            videoElement.play().catch(e => console.log(e));
+                        }
+                    });
+                } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
+                    // دعم أصلي ومباشر لمتصفحات متوافقة (مثل أجهزة Apple/Safari)
+                    videoElement.src = proxyUrl;
+                    videoElement.play();
+                } else {
+                    // خيار تراجع عام لكافة المتصفحات الأخرى
+                    videoElement.src = proxyUrl;
+                    videoElement.play().catch(e => console.log(e));
+                }
+            } else {
+                // تشغيل الأفلام المستقرة (VOD) كملف ميديا تقليدي مباشر من البروكسي
+                videoElement.src = proxyUrl;
+                videoElement.play().catch(err => console.log("خطأ في تشغيل الفيلم: ", err));
+            }
         }
     </script>
 </body>
 </html>
 '''
 
+# -------------------------------------------------------------
+# 3. توجيهات والتحكم الخلفي بـ Flask (Backend Routes)
+# -------------------------------------------------------------
 @app.route('/')
 def home():
     return render_template_string(LOGIN_INTERFACE)
@@ -228,7 +266,7 @@ def player():
     base_api = f"{host}/player_api.php?username={username}&password={password}"
     packaged_data = {"live": [], "movies": []}
 
-    # جلب القنوات وتوليد روابط بروكسي محلية آمنة (تم الاكتفاء بأول 4 فئات وأول 8 قنوات كمثال لسرعة الاستجابة)
+    # جلب فئات وقنوات البث الحي (تم الاكتفاء بـ 4 فئات و8 قنوات لضمان سرعة الاستجابة الهيكلية)
     live_cats = safe_fetch(f"{base_api}&action=get_live_categories")
     if isinstance(live_cats, list):
         for cat in live_cats[:4]: 
@@ -242,7 +280,7 @@ def player():
                             "proxy_url": f"/proxy?type=live&id={ch.get('stream_id')}"
                         })
 
-    # جلب الأفلام وتوليد روابط بروكسي محلية آمنة
+    # جلب فئات وأفلام السينما (VOD)
     vod_cats = safe_fetch(f"{base_api}&action=get_vod_categories")
     if isinstance(vod_cats, list):
         for cat in vod_cats[:4]: 
@@ -260,7 +298,7 @@ def player():
     return render_template_string(PLAYER_INTERFACE, data=packaged_data)
 
 # -------------------------------------------------------------
-# محرك البروكسي (Proxy Engine) لتخطي حظر المتصفحات والكورس والميكسد كونتنت
+# 4. محرك البروكسي (Proxy Engine) المطور لتجاوز CORS وحظر الميديا
 # -------------------------------------------------------------
 @app.route('/proxy')
 def proxy_stream():
@@ -269,30 +307,33 @@ def proxy_stream():
     password = flask_session.get('password')
     
     if not host:
-        return "غير مصرح", 403
+        return "غير مصرح لك بالوصول", 403
 
     stream_type = request.args.get('type') # live أو movie
     stream_id = request.args.get('id')
     ext = request.args.get('ext', 'ts' if stream_type == 'live' else 'mp4')
 
-    # بناء الرابط الأصلي للسيرفر الخارجي
+    # بناء رابط البث المباشر الموجه للسيرفر الأصلي المستهدف
     target_url = f"{host}/{stream_type}/{username}/{password}/{stream_id}.{ext}"
 
     try:
-        # تعديل جوهري: تم تغيير التابع إلى http_session.get للاستفادة من الـ Connection Pool والـ Retries لضمان استقرار البث
+        # استخدام الجلسة المحسنة والمثبتة (http_session) لضمان ثبات الاتصال التدفقي العالي
         req = http_session.get(target_url, stream=True, timeout=15)
         
         def stream_video():
-            # تمرير تدفقي بحجم 64 كيلوبايت لضمان عدم استهلاك كامل ذاكرة الرام للسيرفر
+            # دفق أجزاء الفيديو بحجم 64 كيلوبايت لمنع التحميل الزائد على السيرفر
             for chunk in req.iter_content(chunk_size=1024*64): 
                 if chunk:
                     yield chunk
 
-        # إرجاع رد تدفقي آمن 100% متوافق مع قيود المتصفحات الحديثة
+        # تمرير تيار البيانات فوريًا ومباشرةً للمتصفح بترميز متوافق
         return Response(stream_video(), content_type=req.headers.get('Content-Type', 'video/mp2t'))
     except Exception as e:
-        return f"خطأ في جلب البث الخارجي: {e}", 500
+        return f"فشل البروكسي في سحب دفق الميديا: {e}", 500
 
+# -------------------------------------------------------------
+# 5. توليد وتحميل قائمة القنوات بصيغة M3U
+# -------------------------------------------------------------
 @app.route('/download')
 def download_m3u():
     host = flask_session.get('host')
@@ -324,5 +365,5 @@ def logout():
     return redirect(url_for('home'))
 
 if __name__ == '__main__':
-    # تشغيل السيرفر محلياً على المنفذ 5000
+    # تشغيل السيرفر المحلي في بيئة التطوير
     app.run(debug=True, host='0.0.0.0', port=5000)
