@@ -10,9 +10,10 @@ HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36"
 }
 
+# إعداد جلسة اتصالات محسنة لمعالجة التدفقات الكبيرة وعمليات الـ Buffering
 http_session = requests.Session()
 retry_strategy = Retry(total=3, backoff_factor=0.1, status_forcelist=[500, 502, 503, 504])
-adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=50, pool_maxsize=50)
+adapter = HTTPAdapter(max_retries=retry_strategy, pool_connections=100, pool_maxsize=100) # تم رفع القيمة لضمان ثبات البروكسي
 http_session.mount('http://', adapter)
 http_session.mount('https://', adapter)
 http_session.headers.update(HEADERS)
@@ -187,7 +188,7 @@ PLAYER_INTERFACE = '''
         function playVideo(proxyUrl, name, type) {
             document.getElementById('currentPlayingTitle').innerText = "يعرض الآن: " + name;
             
-            // استخدام streamType آمن للمتصفحات عبر البروكسي
+            // استخدام streamType متوافق مع Video.js لتشغيل البث الحي والأفلام بسلاسة
             let streamType = (type === 'live') ? 'video/mp2t' : 'video/mp4';
 
             player.src({
@@ -227,7 +228,7 @@ def player():
     base_api = f"{host}/player_api.php?username={username}&password={password}"
     packaged_data = {"live": [], "movies": []}
 
-    # جلب القنوات وتوليد روابط بروكسي محلية آمنة
+    # جلب القنوات وتوليد روابط بروكسي محلية آمنة (تم الاكتفاء بأول 4 فئات وأول 8 قنوات كمثال لسرعة الاستجابة)
     live_cats = safe_fetch(f"{base_api}&action=get_live_categories")
     if isinstance(live_cats, list):
         for cat in live_cats[:4]: 
@@ -259,7 +260,7 @@ def player():
     return render_template_string(PLAYER_INTERFACE, data=packaged_data)
 
 # -------------------------------------------------------------
-# 3. محرك البروكسي (Proxy Engine) لتخطي حظر المتصفحات والكورس والميكسد كونتنت
+# محرك البروكسي (Proxy Engine) لتخطي حظر المتصفحات والكورس والميكسد كونتنت
 # -------------------------------------------------------------
 @app.route('/proxy')
 def proxy_stream():
@@ -278,15 +279,16 @@ def proxy_stream():
     target_url = f"{host}/{stream_type}/{username}/{password}/{stream_id}.{ext}"
 
     try:
-        # السيرفر الخاص بك يقوم بجلب البث خلسة ويمرره للمتصفح كأنه جزء من الموقع الآمن
-        req = requests.get(target_url, stream=True, timeout=15, headers={"User-Agent": "Mozilla/5.0"})
+        # تعديل جوهري: تم تغيير التابع إلى http_session.get للاستفادة من الـ Connection Pool والـ Retries لضمان استقرار البث
+        req = http_session.get(target_url, stream=True, timeout=15)
         
         def stream_video():
-            for chunk in req.iter_content(chunk_size=1024*64): # تمرير تدفقي بحجم 64 كيلوبايت
+            # تمرير تدفقي بحجم 64 كيلوبايت لضمان عدم استهلاك كامل ذاكرة الرام للسيرفر
+            for chunk in req.iter_content(chunk_size=1024*64): 
                 if chunk:
                     yield chunk
 
-        # إرجاع رد تدفقي آمن 100% متوافق مع قيود كروم
+        # إرجاع رد تدفقي آمن 100% متوافق مع قيود المتصفحات الحديثة
         return Response(stream_video(), content_type=req.headers.get('Content-Type', 'video/mp2t'))
     except Exception as e:
         return f"خطأ في جلب البث الخارجي: {e}", 500
@@ -322,4 +324,5 @@ def logout():
     return redirect(url_for('home'))
 
 if __name__ == '__main__':
+    # تشغيل السيرفر محلياً على المنفذ 5000
     app.run(debug=True, host='0.0.0.0', port=5000)
