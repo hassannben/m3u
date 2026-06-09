@@ -36,7 +36,7 @@ LOGIN_INTERFACE = '''
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
     <title>IPTV Portal Pro</title>
-    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght@400;700&display=swap" rel="stylesheet">
+    <link href="https://fonts.googleapis.com/css2?family=Tajawal:wght=400;700&display=swap" rel="stylesheet">
     <style>
         body { font-family: 'Tajawal', sans-serif; background: linear-gradient(135deg, #09090e 0%, #150f24 100%); color: #fff; min-height: 100vh; margin: 0; display: flex; align-items: center; justify-content: center; padding: 20px; box-sizing: border-box; }
         .card { background: rgba(22, 17, 39, 0.7); backdrop-filter: blur(20px); width: 100%; max-width: 440px; border-radius: 24px; padding: 40px; border: 1px solid rgba(255,255,255,0.06); box-shadow: 0 20px 50px rgba(0,0,0,0.5); text-align: center; }
@@ -328,13 +328,19 @@ def get_streams():
     if isinstance(streams, list):
         for ch in streams:
             if ch.get("stream_id"):
-                # تمرير الامتداد بشكل ديناميكي دون فرضه ثابتاً ليتوافق مع بنية السيرفر المحمي
+                s_id = ch.get("stream_id")
+                # التقاط وإرسال أي بارامترات حماية إضافية يرسلها الـ API تلقائياً
+                token = ch.get("token", "")
+                
                 if stream_type == 'live':
                     ext = ch.get("container_extension", "m3u8")
-                    proxy_url = f"/proxy?type=live&id={ch.get('stream_id')}&ext={ext}"
+                    proxy_url = f"/proxy?type=live&id={s_id}&ext={ext}"
                 else:
                     ext = ch.get("container_extension", "mp4")
-                    proxy_url = f"/proxy?type=movie&id={ch.get('stream_id')}&ext={ext}"
+                    proxy_url = f"/proxy?type=movie&id={s_id}&ext={ext}"
+                
+                if token:
+                    proxy_url += f"&token={token}"
                 
                 parsed_results.append({
                     "name": ch.get("name"),
@@ -343,7 +349,7 @@ def get_streams():
     return jsonify(parsed_results)
 
 # -------------------------------------------------------------
-# 4. محرك البروكسي المطور (اصلاح بنية امتداد M3U ورؤوس التعرف الحية)
+# 4. محرك البروكسي المطور (يدعم تمرير التوكين المشفر بالكامل)
 # -------------------------------------------------------------
 @app.route('/proxy')
 def proxy_stream():
@@ -358,13 +364,13 @@ def proxy_stream():
     stream_id = request.args.get('id')
     ext = request.args.get('ext')
 
-    # ضبط تلقائي للامتداد بناءً على نوع البث الفعلي الذي يدعمه السيرفر الخاص بك
     if not ext:
         ext = 'm3u8' if stream_type == 'live' else 'mp4'
 
-    # بناء الرابط المطابق تماماً للرابط التجريبي الذي يعمل بنجاح
+    # بناء الرابط الأساسي المتوافق مع Xtream
     target_url = f"{host}/{stream_type}/{username}/{password}/{stream_id}.{ext}"
 
+    # جمع كافة المتغيرات الإضافية الممررة (مثل token والـ الأرقام الملحقة) وإعادة إرفاقها بدقة
     all_args = request.args.to_dict()
     for key in ['type', 'id', 'ext']:
         all_args.pop(key, None)
@@ -372,16 +378,20 @@ def proxy_stream():
     if all_args:
         param_pairs = [f"{k}={v}" for k, v in all_args.items()]
         target_url += "?" + "&".join(param_pairs)
+    else:
+        # إذا لم يرسل الـ API توكن، نقوم بسحب التوكن التجريبي الذي أرسلته لدمجه احتياطياً للسيرفر المحمي
+        fallback_token = "HhQKUhFQEA8UVgNWWlALVAdVVFBTVwoNVFcDU1tSAgIDAVsEWl4AUw8SGUQRQEABVQg6DFRACQsDAwwAUklERBZTEGwLXBAPFAQBVlcGBUYYRxEMXQcRAwYeF0IKAUQLRwdTA1UKEBkUVU0SB0ZcBVg6AQBGC1BcFAhbRw8JShMKWD1XB1VTW1ISD0RSFh5GXRYVRwoMRlVaHhdQChEUUBFTQAlACgYFDhIZRAFbRwpAFxxHCkB3YxQeF1cbEQNfFl8NXUACEFgFRQ1EThZbF2sXABZEEFZYW1dHEFlHVhNJFA9SGmdRWlheUAUWXV0KR0dfRwFAHxtbXVtbFwoUbhVfBhFYGgUCBQMXGw=="
+        target_url += f"?token={fallback_token}"
 
     try:
+        # إرسال الطلب للسيرفر الأصلي مع تفعيل الـ streaming وحجم بافر مناسب
         req = http_session.get(target_url, stream=True, timeout=15, headers=HEADERS)
         
         def stream_video():
-            for chunk in req.iter_content(chunk_size=1024*128): # رفع حجم الدفعة لتسريع البث المباشر
+            for chunk in req.iter_content(chunk_size=1024*128): 
                 if chunk:
                     yield chunk
 
-        # فرض الـ Content-Type لملفات البث المباشر m3u8 ليفهمها المتصفح ومكتبة hls
         content_type = 'application/x-mpegURL' if stream_type == 'live' else req.headers.get('Content-Type', 'video/mp4')
         
         response = Response(stream_video(), content_type=content_type)
