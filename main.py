@@ -344,14 +344,17 @@ def get_streams():
                 s_id = ch.get("stream_id")
                 token = ch.get("token", fallback_token)
                 
-                if stream_type == 'live':
-                    ext = ch.get("container_extension", "m3u8")
-                    direct_url = f"{host}/live/{username}/{password}/{s_id}.{ext}?token={token}"
-                    proxy_url = f"/proxy/live/{s_id}.{ext}?token={token}"
-                else:
-                    ext = ch.get("container_extension", "mp4")
-                    direct_url = f"{host}/movie/{username}/{password}/{s_id}.{ext}"
-                    proxy_url = f"/proxy/movie/{s_id}.{ext}"
+                # ... (داخل حلقة for في دالة get_streams)
+if stream_type == 'live':
+    ext = ch.get("container_extension", "m3u8")
+    direct_url = f"{host}/live/{username}/{password}/{s_id}.{ext}?token={token}"
+    # التغيير هنا: أضفنا username و password لمسار البروكسي
+    proxy_url = f"/proxy/live/{username}/{password}/{s_id}.{ext}?token={token}"
+else:
+    ext = ch.get("container_extension", "mp4")
+    direct_url = f"{host}/movie/{username}/{password}/{s_id}.{ext}"
+    # التغيير هنا: أضفنا username و password لمسار البروكسي
+    proxy_url = f"/proxy/movie/{username}/{password}/{s_id}.{ext}"
                 
                 parsed_results.append({
                     "name": ch.get("name"),
@@ -366,42 +369,32 @@ def get_streams():
 @app.route('/proxy/<path:stream_path>', methods=['GET'])
 def proxy_stream(stream_path):
     host = flask_session.get('host')
-    
-    # 1. بناء الرابط الأصلي: دمج الهوست مع مسار الملف
     target_url = f"{host}/{stream_path}"
-    
-    # 2. إضافة الـ token إذا كان موجوداً في الـ request
     if request.query_string:
         target_url += f"?{request.query_string.decode('utf-8')}"
     
-    # 3. إعداد الـ Headers
+    # استخدم نفس الـ User-Agent الذي أظهرته الصور لضمان القبول
     headers = {
-        "User-Agent": HEADERS["User-Agent"],
-        "Referer": host + "/",
-        "Origin": host
+        "User-Agent": "Be Player", 
+        "Accept-Encoding": "identity"
     }
 
     try:
-        req = requests.get(target_url, headers=headers, stream=True, timeout=20)
+        # allow_redirects=True مهم جداً لمتابعة الـ 302
+        req = requests.get(target_url, headers=headers, stream=True, timeout=20, allow_redirects=True)
         
         if req.status_code != 200:
-            return f"Remote Server returned {req.status_code}", req.status_code
+            return f"Error: {req.status_code}", req.status_code
 
-        # معالجة ملفات M3U8 لإصلاح روابط الـ TS داخلياً
         if stream_path.endswith('.m3u8'):
             content = req.text
-            # استبدال روابط الـ TS لتمر دائماً عبر البروكسي
-            # النمط يبحث عن أي ملف ينتهي بـ .ts ويحول مساره للبروكسي
+            # استبدال الروابط لضمان أن الـ TS تمر عبر البروكسي أيضاً
             base_dir = stream_path.rsplit('/', 1)[0]
             fixed_content = re.sub(r'([^\s\n\r]+\.ts)', lambda m: f"/proxy/{base_dir}/{m.group(1)}", content)
-            
             return Response(fixed_content, content_type='application/x-mpegURL')
         
-        # تمرير بيانات الفيديو (ts) أو الملفات الأخرى
         return Response(req.iter_content(chunk_size=1024*512), 
-                        content_type=req.headers.get('Content-Type', 'video/MP2T'),
-                        status=200)
-                        
+                        content_type=req.headers.get('Content-Type', 'video/MP2T'))
     except Exception as e:
         return f"Proxy Error: {str(e)}", 500
 
