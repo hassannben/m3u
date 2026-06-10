@@ -320,41 +320,43 @@ def player():
     }
     return render_template_string(PLAYER_INTERFACE, data=packaged_data)
 
-@app.route('/get_streams')
-def get_streams():
+@app.route('/proxy/<path:stream_path>', methods=['GET'])
+def proxy_stream(stream_path):
     host = flask_session.get('host')
-    username = flask_session.get('username')
-    password = flask_session.get('password')
-    stream_type = request.args.get('type', 'live')
-    category_id = request.args.get('category_id')
-
-    if not host or not category_id:
-        return jsonify([])
-
-    base_api = f"{host}/player_api.php?username={username}&password={password}"
-    action = "get_live_streams" if stream_type == "live" else "get_vod_streams"
+    target_url = f"{host}/{stream_path}"
+    if request.query_string:
+        target_url += f"?{request.query_string.decode('utf-8')}"
     
-    streams = safe_fetch(f"{base_api}&action={action}&category_id={category_id}")
-    fallback_token = "HhQKUhFQEA8UVgNWWlALVAdVVFBTVwoNVFcDU1tSAgIDAVsEWl4AUw8SGUQRQEABVQg6DFRACQsDAwwAUklERBZTEGwLXBAPFAQBVlcGBUYYRxEMXQcRAwYeF0IKAUQLRwdTA1UKEBkUVU0SB0ZcBVg6AQBGC1BcFAhbRw8JShMKWD1XB1VTW1ISD0RSFh5GXRYVRwoMRlVaHhdQChEUUBFTQAlACgYFDhIZRAFbRwpAFxxHCkB3YxQeF1cbEQNfFl8NXUACEFgFRQ1EThZbF2sXABZEEFZYW1dHEFlHVhNJFA9SGmdRWlheUAUWXV0KR0dfRwFAHxtbXVtbFwoUbhVfBhFYGgUCBQMXGw=="
+    # 1. إعداد الترويسات لمحاكاة المتصفح بالكامل
+    headers = {
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "Referer": f"{host}/",
+        "Origin": host
+    }
 
-    parsed_results = []
-    if isinstance(streams, list):
-        for ch in streams:
-            if ch.get("stream_id"):
-                s_id = ch.get("stream_id")
-                token = ch.get("token", fallback_token)
-                if stream_type == 'live':
-                    ext = ch.get("container_extension", "m3u8")
-                    proxy_url = f"/proxy/live/{username}/{password}/{s_id}.{ext}?token={token}"
-                else:
-                    ext = ch.get("container_extension", "mp4")
-                    proxy_url = f"/proxy/movie/{username}/{password}/{s_id}.{ext}"
-                
-                parsed_results.append({
-                    "name": ch.get("name"),
-                    "proxy_url": proxy_url
-                })
-    return jsonify(parsed_results)
+    try:
+        # 2. استخدام Session ثابت لنقل الـ Cookies بين الطلبات
+        session = requests.Session()
+        
+        # 3. تنفيذ الطلب مع الترويسات
+        req = session.get(target_url, headers=headers, stream=True, timeout=20, allow_redirects=True)
+        
+        if req.status_code != 200:
+            return f"Error: {req.status_code}", req.status_code
+
+        # إذا كان ملف m3u8 نقوم بتعديل الروابط
+        if stream_path.endswith('.m3u8'):
+            content = req.text
+            # ملاحظة: نستخدم النمط الذي يحافظ على التوكن في الرابط
+            base_dir = stream_path.rsplit('/', 1)[0]
+            fixed_content = re.sub(r'([^\s\n\r]+\.ts)', lambda m: f"/proxy/{base_dir}/{m.group(1)}", content)
+            return Response(fixed_content, content_type='application/x-mpegURL')
+        
+        # 4. إعادة تدفق الفيديو (Video Stream)
+        return Response(req.iter_content(chunk_size=1024*512), 
+                        content_type=req.headers.get('Content-Type', 'video/MP2T'))
+    except Exception as e:
+        return f"Proxy Error: {str(e)}", 500
 
 # -------------------------------------------------------------
 # 4. محرك البروكسي الشامل مع ميزة فك الضغط التلقائي للـ m3u8
