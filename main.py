@@ -337,25 +337,24 @@ def get_streams():
     streams = safe_fetch(f"{base_api}&action={action}&category_id={category_id}")
     fallback_token = "HhQKUhFQEA8UVgNWWlALVAdVVFBTVwoNVFcDU1tSAgIDAVsEWl4AUw8SGUQRQEABVQg6DFRACQsDAwwAUklERBZTEGwLXBAPFAQBVlcGBUYYRxEMXQcRAwYeF0IKAUQLRwdTA1UKEBkUVU0SB0ZcBVg6AQBGC1BcFAhbRw8JShMKWD1XB1VTW1ISD0RSFh5GXRYVRwoMRlVaHhdQChEUUBFTQAlACgYFDhIZRAFbRwpAFxxHCkB3YxQeF1cbEQNfFl8NXUACEFgFRQ1EThZbF2sXABZEEFZYW1dHEFlHVhNJFA9SGmdRWlheUAUWXV0KR0dfRwFAHxtbXVtbFwoUbhVfBhFYGgUCBQMXGw=="
 
-    parsed_results = []
+   parsed_results = []
     if isinstance(streams, list):
         for ch in streams:
             if ch.get("stream_id"):
                 s_id = ch.get("stream_id")
                 token = ch.get("token", fallback_token)
                 
-                # ... (داخل حلقة for في دالة get_streams)
-if stream_type == 'live':
-    ext = ch.get("container_extension", "m3u8")
-    direct_url = f"{host}/live/{username}/{password}/{s_id}.{ext}?token={token}"
-    # التغيير هنا: أضفنا username و password لمسار البروكسي
-    proxy_url = f"/proxy/live/{username}/{password}/{s_id}.{ext}?token={token}"
-else:
-    ext = ch.get("container_extension", "mp4")
-    direct_url = f"{host}/movie/{username}/{password}/{s_id}.{ext}"
-    # التغيير هنا: أضفنا username و password لمسار البروكسي
-    proxy_url = f"/proxy/movie/{username}/{password}/{s_id}.{ext}"
+                # الآن كل ما يلي يقع داخل حلقة for بشكل صحيح:
+                if stream_type == 'live':
+                    ext = ch.get("container_extension", "m3u8")
+                    direct_url = f"{host}/live/{username}/{password}/{s_id}.{ext}?token={token}"
+                    proxy_url = f"/proxy/live/{username}/{password}/{s_id}.{ext}?token={token}"
+                else:
+                    ext = ch.get("container_extension", "mp4")
+                    direct_url = f"{host}/movie/{username}/{password}/{s_id}.{ext}"
+                    proxy_url = f"/proxy/movie/{username}/{password}/{s_id}.{ext}"
                 
+                # تأكد أن هذه الـ append تبدأ بنفس مستوى الـ if/else
                 parsed_results.append({
                     "name": ch.get("name"),
                     "direct_url": direct_url,
