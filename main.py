@@ -363,33 +363,47 @@ def get_streams():
 # -------------------------------------------------------------
 # 4. محرك البروكسي الشامل مع ميزة فك الضغط التلقائي للـ m3u8
 # -------------------------------------------------------------
-@app.route('/proxy/<path:stream_path>')
+@app.route('/proxy/<path:stream_path>', methods=['GET'])
 def proxy_stream(stream_path):
     host = flask_session.get('host')
+    
+    # 1. بناء الرابط الأصلي: دمج الهوست مع مسار الملف
     target_url = f"{host}/{stream_path}"
-    if request.query_string: 
+    
+    # 2. إضافة الـ token إذا كان موجوداً في الـ request
+    if request.query_string:
         target_url += f"?{request.query_string.decode('utf-8')}"
     
+    # 3. إعداد الـ Headers
+    headers = {
+        "User-Agent": HEADERS["User-Agent"],
+        "Referer": host + "/",
+        "Origin": host
+    }
+
     try:
-        req = requests.get(target_url, stream=True, timeout=15)
+        req = requests.get(target_url, headers=headers, stream=True, timeout=20)
         
-        # إذا كان ملف مانيسايت (m3u8)
+        if req.status_code != 200:
+            return f"Remote Server returned {req.status_code}", req.status_code
+
+        # معالجة ملفات M3U8 لإصلاح روابط الـ TS داخلياً
         if stream_path.endswith('.m3u8'):
             content = req.text
-            # استبدال روابط الـ TS لتمر عبر نفس مسار البروكسي الخاص بنا
-            # هذا يضمن بقاء جميع الطلبات آمنة وموجهة للسيرفر المحلي
-            base_path = stream_path.rsplit('/', 1)[0]
-            fixed_content = re.sub(r'([a-zA-Z0-9_-]+\.ts(?:\?token=[^"\s]+)?)', 
-                                   lambda m: f"/proxy/{base_path}/{m.group(1)}", content)
+            # استبدال روابط الـ TS لتمر دائماً عبر البروكسي
+            # النمط يبحث عن أي ملف ينتهي بـ .ts ويحول مساره للبروكسي
+            base_dir = stream_path.rsplit('/', 1)[0]
+            fixed_content = re.sub(r'([^\s\n\r]+\.ts)', lambda m: f"/proxy/{base_dir}/{m.group(1)}", content)
             
-            return Response(fixed_content, content_type='application/x-mpegURL', status=req.status_code)
+            return Response(fixed_content, content_type='application/x-mpegURL')
         
-        # لبقية الملفات (مثل ts) نقوم بعمل Streaming مباشر
+        # تمرير بيانات الفيديو (ts) أو الملفات الأخرى
         return Response(req.iter_content(chunk_size=1024*512), 
-                        content_type=req.headers.get('Content-Type', 'video/MP2T'), 
-                        status=req.status_code)
+                        content_type=req.headers.get('Content-Type', 'video/MP2T'),
+                        status=200)
+                        
     except Exception as e:
-        return str(e), 500
+        return f"Proxy Error: {str(e)}", 500
 
 # -------------------------------------------------------------
 # 5. تحميل ملف الـ M3U
