@@ -255,17 +255,12 @@ PLAYER_INTERFACE = '''
                     hls.on(Hls.Events.MANIFEST_PARSED, function() { videoElement.play().catch(e => {}); });
                     
                     hls.on(Hls.Events.ERROR, function(event, data) {
-                        if (data.fatal) {
-                            if (streamUrl === proxyUrl) {
-                                console.log("Fallback to direct URL...");
-                                streamUrl = directUrl;
-                                hls.loadSource(streamUrl);
-                                hls.startLoad();
-                            } else {
-                                hls.recoverMediaError();
-                            }
-                        }
-                    });
+    if (data.fatal) {
+        // حظر التراجع للرابط المباشر لأنه غير آمن (HTTP)
+        console.error("فشل دفق البروكسي:", data);
+        alert("خطأ في الاتصال بالسيرفر. تأكد من عمل السيرفر الخارجي.");
+    }
+});
                 } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
                     videoElement.src = streamUrl;
                     videoElement.play().catch(e => {
@@ -372,32 +367,27 @@ def get_streams():
 def proxy_stream(stream_path):
     host = flask_session.get('host')
     target_url = f"{host}/{stream_path}"
-    if request.query_string: target_url += f"?{request.query_string.decode('utf-8')}"
+    if request.query_string: 
+        target_url += f"?{request.query_string.decode('utf-8')}"
     
-    # 1. نسخ الـ Headers من المتصفح الأصلي للبروكسي
-    headers = {
-        "User-Agent": request.headers.get('User-Agent', HEADERS['User-Agent']),
-        "Referer": host + "/",
-        "Origin": host
-    }
-
     try:
-        req = requests.get(target_url, headers=headers, stream=True, timeout=15)
+        req = requests.get(target_url, stream=True, timeout=15)
         
-        # 2. إذا كان ملف m3u8، نقوم بتعديله وتمريره
-        if '.m3u8' in stream_path:
+        # إذا كان ملف مانيسايت (m3u8)
+        if stream_path.endswith('.m3u8'):
             content = req.text
-            # استبدال روابط الـ ts لتمر عبر البروكسي
-            fixed_content = re.sub(r'([^\s\n\r]+\.ts)', lambda m: f"/proxy/{stream_path.rsplit('/', 1)[0]}/{m.group(1)}", content)
-            response = Response(fixed_content, content_type='application/x-mpegURL')
-        else:
-            # 3. تمرير ملفات الفيديو (ts) كما هي مع كافة رؤوس الاستجابة الأصلية
-            response = Response(req.iter_content(chunk_size=1024*512), 
-                                content_type=req.headers.get('Content-Type', 'video/mp2t'),
-                                status=req.status_code)
+            # استبدال روابط الـ TS لتمر عبر نفس مسار البروكسي الخاص بنا
+            # هذا يضمن بقاء جميع الطلبات آمنة وموجهة للسيرفر المحلي
+            base_path = stream_path.rsplit('/', 1)[0]
+            fixed_content = re.sub(r'([a-zA-Z0-9_-]+\.ts(?:\?token=[^"\s]+)?)', 
+                                   lambda m: f"/proxy/{base_path}/{m.group(1)}", content)
+            
+            return Response(fixed_content, content_type='application/x-mpegURL', status=req.status_code)
         
-        response.headers['Access-Control-Allow-Origin'] = '*'
-        return response
+        # لبقية الملفات (مثل ts) نقوم بعمل Streaming مباشر
+        return Response(req.iter_content(chunk_size=1024*512), 
+                        content_type=req.headers.get('Content-Type', 'video/MP2T'), 
+                        status=req.status_code)
     except Exception as e:
         return str(e), 500
 
