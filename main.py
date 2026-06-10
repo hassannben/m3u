@@ -366,15 +366,17 @@ def proxy_stream(stream_path):
     if request.query_string:
         target_url += f"?{request.query_string.decode('utf-8')}"
     
-    # استخدم نفس الـ User-Agent الذي أظهرته الصور لضمان القبول
+    # إضافة Referer و Origin لمحاكاة التطبيق الرسمي
     headers = {
         "User-Agent": "Be Player", 
-        "Accept-Encoding": "identity"
+        "Accept-Encoding": "identity",
+        "Referer": f"{host}/", 
+        "Origin": host
     }
 
     try:
-        # allow_redirects=True مهم جداً لمتابعة الـ 302
         req = requests.get(target_url, headers=headers, stream=True, timeout=20, allow_redirects=True)
+        # ... (باقي الكود كما هو)
         
         if req.status_code != 200:
             return f"Error: {req.status_code}", req.status_code
