@@ -9,7 +9,7 @@ app.secret_key = "iptv_secret_secure_key_12345"
 
 HEADERS = {
     "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
-    "Accept-Encoding": "identity" # نطلب من السيرفر عدم إرسال بيانات مضغوطة لتسهيل القراءة والنظام النصي
+    "Accept-Encoding": "identity"
 }
 
 http_session = requests.Session()
@@ -237,7 +237,7 @@ PLAYER_INTERFACE = '''
             document.getElementById('currentPlayingTitle').innerText = "يعرض الآن: " + name;
             if (hls) { hls.destroy(); hls = null; }
 
-            var streamUrl = proxyUrl; // تشغيل البروكسي لإصلاح جدار الحماية
+            var streamUrl = proxyUrl; 
 
             if (type === 'live') {
                 if (Hls.isSupported()) {
@@ -255,12 +255,10 @@ PLAYER_INTERFACE = '''
                     hls.on(Hls.Events.MANIFEST_PARSED, function() { videoElement.play().catch(e => {}); });
                     
                     hls.on(Hls.Events.ERROR, function(event, data) {
-    if (data.fatal) {
-        // حظر التراجع للرابط المباشر لأنه غير آمن (HTTP)
-        console.error("فشل دفق البروكسي:", data);
-        alert("خطأ في الاتصال بالسيرفر. تأكد من عمل السيرفر الخارجي.");
-    }
-});
+                        if (data.fatal) {
+                            console.error("فشل دفق البروكسي:", data);
+                        }
+                    });
                 } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
                     videoElement.src = streamUrl;
                     videoElement.play().catch(e => {
@@ -320,83 +318,86 @@ def player():
     }
     return render_template_string(PLAYER_INTERFACE, data=packaged_data)
 
+@app.route('/get_streams')
+def get_streams():
+    host = flask_session.get('host')
+    username = flask_session.get('username')
+    password = flask_session.get('password')
+    
+    if not host:
+        return jsonify([])
+
+    stream_type = request.args.get('type', 'live')
+    category_id = request.args.get('category_id', '')
+
+    base_api = f"{host}/player_api.php?username={username}&password={password}"
+    action = "get_live_streams" if stream_type == "live" else "get_vod_streams"
+    
+    raw_streams = safe_fetch(f"{base_api}&action={action}&category_id={category_id}") or []
+    
+    processed_list = []
+    if isinstance(raw_streams, list):
+        for item in raw_streams:
+            stream_id = item.get('stream_id')
+            if not stream_id:
+                continue
+                
+            name = item.get('name', 'Unknown')
+            # هنا جلب الامتداد الفعلي المُخزن بالقناة الأصلي دون إجبار تحويل الـ ts
+            ext = item.get('container_extension')
+            if not ext:
+                ext = 'ts' if stream_type == "live" else "mp4"
+            
+            folder_type = "live" if stream_type == "live" else "movie"
+            target_path = f"{folder_type}/{username}/{password}/{stream_id}.{ext}"
+            
+            processed_list.append({
+                "name": name,
+                "direct_url": f"{host}/{target_path}",
+                "proxy_url": f"/proxy/{target_path}"
+            })
+            
+    return jsonify(processed_list)
+
+# -------------------------------------------------------------
+# 4. محرك البروكسي (Proxy Engine)
+# -------------------------------------------------------------
 @app.route('/proxy/<path:stream_path>', methods=['GET'])
 def proxy_stream(stream_path):
     host = flask_session.get('host')
+    if not host:
+        return "Unauthorized", 401
+
     target_url = f"{host}/{stream_path}"
     if request.query_string:
         target_url += f"?{request.query_string.decode('utf-8')}"
     
-    # 1. إعداد الترويسات لمحاكاة المتصفح بالكامل
     headers = {
-        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/120.0.0.0 Safari/537.36",
+        "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
+        "Accept-Encoding": "identity",
         "Referer": f"{host}/",
         "Origin": host
     }
 
     try:
-        # 2. استخدام Session ثابت لنقل الـ Cookies بين الطلبات
-        session = requests.Session()
-        
-        # 3. تنفيذ الطلب مع الترويسات
-        req = session.get(target_url, headers=headers, stream=True, timeout=20, allow_redirects=True)
-        
-        if req.status_code != 200:
-            return f"Error: {req.status_code}", req.status_code
-
-        # إذا كان ملف m3u8 نقوم بتعديل الروابط
-        if stream_path.endswith('.m3u8'):
-            content = req.text
-            # ملاحظة: نستخدم النمط الذي يحافظ على التوكن في الرابط
-            base_dir = stream_path.rsplit('/', 1)[0]
-            fixed_content = re.sub(r'([^\s\n\r]+\.ts)', lambda m: f"/proxy/{base_dir}/{m.group(1)}", content)
-            return Response(fixed_content, content_type='application/x-mpegURL')
-        
-        # 4. إعادة تدفق الفيديو (Video Stream)
-        return Response(req.iter_content(chunk_size=1024*512), 
-                        content_type=req.headers.get('Content-Type', 'video/MP2T'))
-    except Exception as e:
-        return f"Proxy Error: {str(e)}", 500
-
-# -------------------------------------------------------------
-# 4. محرك البروكسي الشامل مع ميزة فك الضغط التلقائي للـ m3u8
-# -------------------------------------------------------------
-@app.route('/proxy/<path:stream_path>', methods=['GET'])
-def proxy_stream(stream_path):
-    host = flask_session.get('host')
-    target_url = f"{host}/{stream_path}"
-    if request.query_string:
-        target_url += f"?{request.query_string.decode('utf-8')}"
-    
-    # إضافة Referer و Origin لمحاكاة التطبيق الرسمي
-    headers = {
-        "User-Agent": "Be Player", 
-        "Accept-Encoding": "identity",
-        "Referer": f"{host}/", 
-        "Origin": host
-    }
-
-    try:
-        req = requests.get(target_url, headers=headers, stream=True, timeout=20, allow_redirects=True)
-        # ... (باقي الكود كما هو)
+        req = http_session.get(target_url, headers=headers, stream=True, timeout=20, allow_redirects=True)
         
         if req.status_code != 200:
             return f"Error: {req.status_code}", req.status_code
 
         if stream_path.endswith('.m3u8'):
             content = req.text
-            # استبدال الروابط لضمان أن الـ TS تمر عبر البروكسي أيضاً
             base_dir = stream_path.rsplit('/', 1)[0]
             fixed_content = re.sub(r'([^\s\n\r]+\.ts)', lambda m: f"/proxy/{base_dir}/{m.group(1)}", content)
             return Response(fixed_content, content_type='application/x-mpegURL')
         
-        return Response(req.iter_content(chunk_size=1024*512), 
+        return Response(req.iter_content(chunk_size=1024*256), 
                         content_type=req.headers.get('Content-Type', 'video/MP2T'))
     except Exception as e:
         return f"Proxy Error: {str(e)}", 500
 
 # -------------------------------------------------------------
-# 5. تحميل ملف الـ M3U
+# 5. تحميل ملف الـ M3U الأصلي بدون تعديل روابط القنوات الحية
 # -------------------------------------------------------------
 @app.route('/download')
 def download_m3u():
@@ -417,7 +418,11 @@ def download_m3u():
                         for item in streams:
                             s_id = item.get("stream_id")
                             if s_id:
-                                ext = item.get("container_extension", "m3u8" if block_type == "live" else "mp4")
+                                # التعديل هنا: جلب الامتداد الفعلي للسيرفر (مثل ts) بدلاً من كتابة m3u8 إجبارياً
+                                ext = item.get("container_extension")
+                                if not ext:
+                                    ext = "ts" if block_type == "live" else "mp4"
+                                    
                                 yield f'#EXTINF:-1 group-title="{cat.get("category_name")}",{item.get("name")}\n'
                                 yield f"{host}/{block_type}/{username}/{password}/{s_id}.{ext}\n"
 
