@@ -3,7 +3,6 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import re
-import base64
 
 app = Flask(__name__)
 app.secret_key = "iptv_secret_secure_key_12345"
@@ -28,12 +27,6 @@ def safe_fetch(url):
     except:
         pass
     return None
-
-def encode_host(url):
-    return base64.urlsafe_b64encode(url.encode()).decode()
-
-def decode_host(encoded_str):
-    return base64.urlsafe_b64decode(encoded_str.encode()).decode()
 
 # -------------------------------------------------------------
 # 1. واجهة تسجيل الدخول (Login Interface)
@@ -244,45 +237,40 @@ PLAYER_INTERFACE = '''
             document.getElementById('currentPlayingTitle').innerText = "يعرض الآن: " + name;
             if (hls) { hls.destroy(); hls = null; }
 
-            // التحقق بذكاء هل الامتداد للبث يعتمد على فهرس m3u8 أم ملف خام
-            var isHLS = proxyUrl.toLowerCase().includes('.m3u8');
+            var streamUrl = proxyUrl; 
 
-            if (type === 'live' && isHLS) {
+            if (type === 'live') {
                 if (Hls.isSupported()) {
                     hls = new Hls({
                         enableWorker: true,
                         lowLatencyMode: true,
                         maxBufferLength: 30,
-                        maxMaxBufferLength: 60
+                        maxMaxBufferLength: 60,
+                        xhrSetup: function(xhr, url) {
+                            xhr.withCredentials = false;
+                        }
                     });
-                    hls.loadSource(proxyUrl);
+                    hls.loadSource(streamUrl);
                     hls.attachMedia(videoElement);
                     hls.on(Hls.Events.MANIFEST_PARSED, function() { videoElement.play().catch(e => {}); });
                     
                     hls.on(Hls.Events.ERROR, function(event, data) {
                         if (data.fatal) {
-                            console.error("فشل دفق البروكسي الحية HLS، الانتقال المباشر:", data);
-                            hls.destroy();
-                            videoElement.src = directUrl;
-                            videoElement.play().catch(err => {});
+                            console.error("فشل دفق البروكسي:", data);
                         }
                     });
                 } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-                    videoElement.src = proxyUrl;
+                    videoElement.src = streamUrl;
                     videoElement.play().catch(e => {
                         videoElement.src = directUrl;
                         videoElement.play().catch(err => {});
                     });
                 }
             } else {
-                // لتشغيل قنوات الـ .ts الخام مباشرة بدون محاولة معالجتها كـ m3u8 (حل مشكلة 403)
                 videoElement.src = proxyUrl;
                 videoElement.play().catch(err => {
-                    console.log("فشل تشغيل البروكسي للملف الخام، جاري الانتقال للرابط المباشر السريع...");
                     videoElement.src = directUrl;
-                    videoElement.play().catch(e => {
-                        alert("عذراً، هذا الامتداد غير مدعوم للعرض المباشر داخل متصفحك الحالي.");
-                    });
+                    videoElement.play().catch(e => {});
                 });
             }
         }
@@ -349,13 +337,13 @@ def get_streams():
     
     processed_list = []
     if isinstance(raw_streams, list):
-        encoded_h = encode_host(host)
         for item in raw_streams:
             stream_id = item.get('stream_id')
             if not stream_id:
                 continue
                 
             name = item.get('name', 'Unknown')
+            # هنا جلب الامتداد الفعلي المُخزن بالقناة الأصلي دون إجبار تحويل الـ ts
             ext = item.get('container_extension')
             if not ext:
                 ext = 'ts' if stream_type == "live" else "mp4"
@@ -366,34 +354,23 @@ def get_streams():
             processed_list.append({
                 "name": name,
                 "direct_url": f"{host}/{target_path}",
-                "proxy_url": f"/proxy/{target_path}?_h={encoded_h}"
+                "proxy_url": f"/proxy/{target_path}"
             })
             
     return jsonify(processed_list)
 
 # -------------------------------------------------------------
-# 4. محرك البروكسي المستقر (Proxy Engine)
+# 4. محرك البروكسي (Proxy Engine)
 # -------------------------------------------------------------
 @app.route('/proxy/<path:stream_path>', methods=['GET'])
 def proxy_stream(stream_path):
-    encoded_h = request.args.get('_h')
-    if encoded_h:
-        try:
-            host = decode_host(encoded_h)
-        except:
-            host = flask_session.get('host')
-    else:
-        host = flask_session.get('host')
-
+    host = flask_session.get('host')
     if not host:
-        return "Unauthorized Request", 401
+        return "Unauthorized", 401
 
     target_url = f"{host}/{stream_path}"
-    
-    remaining_params = {k: v for k, v in request.args.items() if k != '_h'}
-    if remaining_params:
-        from urllib.parse import urlencode
-        target_url += f"?{urlencode(remaining_params)}"
+    if request.query_string:
+        target_url += f"?{request.query_string.decode('utf-8')}"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -406,16 +383,12 @@ def proxy_stream(stream_path):
         req = http_session.get(target_url, headers=headers, stream=True, timeout=20, allow_redirects=True)
         
         if req.status_code != 200:
-            return f"Server Error: {req.status_code}", req.status_code
+            return f"Error: {req.status_code}", req.status_code
 
         if stream_path.endswith('.m3u8'):
             content = req.text
             base_dir = stream_path.rsplit('/', 1)[0]
-            fixed_content = re.sub(
-                r'([^\s\n\r]+\.ts)', 
-                lambda m: f"/proxy/{base_dir}/{m.group(1)}?_h={encoded_h if encoded_h else ''}", 
-                content
-            )
+            fixed_content = re.sub(r'([^\s\n\r]+\.ts)', lambda m: f"/proxy/{base_dir}/{m.group(1)}", content)
             return Response(fixed_content, content_type='application/x-mpegURL')
         
         return Response(req.iter_content(chunk_size=1024*256), 
@@ -424,7 +397,7 @@ def proxy_stream(stream_path):
         return f"Proxy Error: {str(e)}", 500
 
 # -------------------------------------------------------------
-# 5. تحميل ملف الـ M3U الأصلي بدون أي تعديل خارجي بالرابط
+# 5. تحميل ملف الـ M3U الأصلي بدون تعديل روابط القنوات الحية
 # -------------------------------------------------------------
 @app.route('/download')
 def download_m3u():
@@ -445,6 +418,7 @@ def download_m3u():
                         for item in streams:
                             s_id = item.get("stream_id")
                             if s_id:
+                                # التعديل هنا: جلب الامتداد الفعلي للسيرفر (مثل ts) بدلاً من كتابة m3u8 إجبارياً
                                 ext = item.get("container_extension")
                                 if not ext:
                                     ext = "ts" if block_type == "live" else "mp4"
