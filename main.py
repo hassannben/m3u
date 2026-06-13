@@ -167,9 +167,12 @@ PLAYER_INTERFACE = '''
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+    
     <script>
         var videoElement = document.getElementById('my-video');
         var hls = null;
+        var tsPlayer = null;
         var currentTab = 'live';
         
         var liveCategories = {{ data.live_cats|tojson }};
@@ -242,47 +245,55 @@ PLAYER_INTERFACE = '''
 
         function playVideo(directUrl, proxyUrl, name, type) {
             document.getElementById('currentPlayingTitle').innerText = "يعرض الآن: " + name;
+            
+            // تنظيف وإغلاق أي مشغل قديم شغال لمنع تعليق المتصفح
             if (hls) { hls.destroy(); hls = null; }
+            if (tsPlayer) { tsPlayer.unload(); tsPlayer.destroy(); tsPlayer = null; }
 
-            // التحقق بذكاء هل الامتداد للبث يعتمد على فهرس m3u8 أم ملف خام
-            var isHLS = proxyUrl.toLowerCase().includes('.m3u8');
+            var cleanUrl = proxyUrl.split('?')[0].toLowerCase();
+            var isM3U8 = cleanUrl.endsWith('.m3u8');
+            var isTS = cleanUrl.endsWith('.ts');
 
-            if (type === 'live' && isHLS) {
+            if (type === 'live' && isM3U8) {
+                // القنوات التي تبث بامتداد m3u8
                 if (Hls.isSupported()) {
-                    hls = new Hls({
-                        enableWorker: true,
-                        lowLatencyMode: true,
-                        maxBufferLength: 30,
-                        maxMaxBufferLength: 60
-                    });
+                    hls = new Hls({ enableWorker: true, lowLatencyMode: true });
                     hls.loadSource(proxyUrl);
                     hls.attachMedia(videoElement);
                     hls.on(Hls.Events.MANIFEST_PARSED, function() { videoElement.play().catch(e => {}); });
                     
                     hls.on(Hls.Events.ERROR, function(event, data) {
                         if (data.fatal) {
-                            console.error("فشل دفق البروكسي الحية HLS، الانتقال المباشر:", data);
                             hls.destroy();
                             videoElement.src = directUrl;
                             videoElement.play().catch(err => {});
                         }
                     });
-                } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-                    videoElement.src = proxyUrl;
-                    videoElement.play().catch(e => {
+                }
+            } 
+            else if (type === 'live' && isTS) {
+                // فك ترميز وتشغيل قنوات الـ .ts الخام داخل المتصفح مباشرة عبر mpegts.js
+                if (mpegts.getFeatureList().mseLivePlayback) {
+                    tsPlayer = mpegts.createPlayer({
+                        type: 'mse',
+                        isLive: true,
+                        url: proxyUrl
+                    });
+                    tsPlayer.attachMedia(videoElement);
+                    tsPlayer.load();
+                    tsPlayer.play().catch(e => {
+                        // التحويل التلقائي للرابط المباشر في حال حدوث أي مشكلة في البروكسي
                         videoElement.src = directUrl;
                         videoElement.play().catch(err => {});
                     });
                 }
-            } else {
-                // لتشغيل قنوات الـ .ts الخام مباشرة بدون محاولة معالجتها كـ m3u8 (حل مشكلة 403)
+            } 
+            else {
+                // تشغيل الأفلام السينمائية VOD التقليدية (mp4 / mkv)
                 videoElement.src = proxyUrl;
                 videoElement.play().catch(err => {
-                    console.log("فشل تشغيل البروكسي للملف الخام، جاري الانتقال للرابط المباشر السريع...");
                     videoElement.src = directUrl;
-                    videoElement.play().catch(e => {
-                        alert("عذراً، هذا الامتداد غير مدعوم للعرض المباشر داخل متصفحك الحالي.");
-                    });
+                    videoElement.play().catch(e => {});
                 });
             }
         }
@@ -372,7 +383,7 @@ def get_streams():
     return jsonify(processed_list)
 
 # -------------------------------------------------------------
-# 4. محرك البروكسي المستقر (Proxy Engine)
+# 4. محرك البروكسي (Proxy Engine)
 # -------------------------------------------------------------
 @app.route('/proxy/<path:stream_path>', methods=['GET'])
 def proxy_stream(stream_path):
