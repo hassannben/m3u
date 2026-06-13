@@ -29,6 +29,7 @@ def safe_fetch(url):
         pass
     return None
 
+# دالتين لتشفير وفك تشفير الرابط لحمايته في الـ URL
 def encode_host(url):
     return base64.urlsafe_b64encode(url.encode()).decode()
 
@@ -244,45 +245,40 @@ PLAYER_INTERFACE = '''
             document.getElementById('currentPlayingTitle').innerText = "يعرض الآن: " + name;
             if (hls) { hls.destroy(); hls = null; }
 
-            // التحقق بذكاء هل الامتداد للبث يعتمد على فهرس m3u8 أم ملف خام
-            var isHLS = proxyUrl.toLowerCase().includes('.m3u8');
+            var streamUrl = proxyUrl; 
 
-            if (type === 'live' && isHLS) {
+            if (type === 'live') {
                 if (Hls.isSupported()) {
                     hls = new Hls({
                         enableWorker: true,
                         lowLatencyMode: true,
                         maxBufferLength: 30,
-                        maxMaxBufferLength: 60
+                        maxMaxBufferLength: 60,
+                        xhrSetup: function(xhr, url) {
+                            xhr.withCredentials = false;
+                        }
                     });
-                    hls.loadSource(proxyUrl);
+                    hls.loadSource(streamUrl);
                     hls.attachMedia(videoElement);
                     hls.on(Hls.Events.MANIFEST_PARSED, function() { videoElement.play().catch(e => {}); });
                     
                     hls.on(Hls.Events.ERROR, function(event, data) {
                         if (data.fatal) {
-                            console.error("فشل دفق البروكسي الحية HLS، الانتقال المباشر:", data);
-                            hls.destroy();
-                            videoElement.src = directUrl;
-                            videoElement.play().catch(err => {});
+                            console.error("فشل دفق البروكسي:", data);
                         }
                     });
                 } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-                    videoElement.src = proxyUrl;
+                    videoElement.src = streamUrl;
                     videoElement.play().catch(e => {
                         videoElement.src = directUrl;
                         videoElement.play().catch(err => {});
                     });
                 }
             } else {
-                // لتشغيل قنوات الـ .ts الخام مباشرة بدون محاولة معالجتها كـ m3u8 (حل مشكلة 403)
                 videoElement.src = proxyUrl;
                 videoElement.play().catch(err => {
-                    console.log("فشل تشغيل البروكسي للملف الخام، جاري الانتقال للرابط المباشر السريع...");
                     videoElement.src = directUrl;
-                    videoElement.play().catch(e => {
-                        alert("عذراً، هذا الامتداد غير مدعوم للعرض المباشر داخل متصفحك الحالي.");
-                    });
+                    videoElement.play().catch(e => {});
                 });
             }
         }
@@ -349,6 +345,7 @@ def get_streams():
     
     processed_list = []
     if isinstance(raw_streams, list):
+        # تشفير الهوست لإرساله بأمان في الرابط للبروكسي
         encoded_h = encode_host(host)
         for item in raw_streams:
             stream_id = item.get('stream_id')
@@ -363,6 +360,7 @@ def get_streams():
             folder_type = "live" if stream_type == "live" else "movie"
             target_path = f"{folder_type}/{username}/{password}/{stream_id}.{ext}"
             
+            # تمرير بيانات الهوست المشفرة كـ Query Parameter لإصلاح خطأ 401
             processed_list.append({
                 "name": name,
                 "direct_url": f"{host}/{target_path}",
@@ -372,11 +370,13 @@ def get_streams():
     return jsonify(processed_list)
 
 # -------------------------------------------------------------
-# 4. محرك البروكسي المستقر (Proxy Engine)
+# 4. محرك البروكسي المعدل (حل مشكلة الـ 401)
 # -------------------------------------------------------------
 @app.route('/proxy/<path:stream_path>', methods=['GET'])
 def proxy_stream(stream_path):
+    # جلب الهوست المشفر من الرابط مباشرة لحل مشكلة فقدان السيشين بالمتصفح
     encoded_h = request.args.get('_h')
+    
     if encoded_h:
         try:
             host = decode_host(encoded_h)
@@ -386,10 +386,11 @@ def proxy_stream(stream_path):
         host = flask_session.get('host')
 
     if not host:
-        return "Unauthorized Request", 401
+        return "Missing Host Information (401)", 401
 
     target_url = f"{host}/{stream_path}"
     
+    # دمج بقية البيانات المطلوبة من السيرفر الأصلي إن وجدت
     remaining_params = {k: v for k, v in request.args.items() if k != '_h'}
     if remaining_params:
         from urllib.parse import urlencode
@@ -406,11 +407,12 @@ def proxy_stream(stream_path):
         req = http_session.get(target_url, headers=headers, stream=True, timeout=20, allow_redirects=True)
         
         if req.status_code != 200:
-            return f"Server Error: {req.status_code}", req.status_code
+            return f"Error from Server: {req.status_code}", req.status_code
 
         if stream_path.endswith('.m3u8'):
             content = req.text
             base_dir = stream_path.rsplit('/', 1)[0]
+            # إعادة تمرير الهوست المشفر لملفات .ts الداخلية لضمان عدم توقف البث المباشر
             fixed_content = re.sub(
                 r'([^\s\n\r]+\.ts)', 
                 lambda m: f"/proxy/{base_dir}/{m.group(1)}?_h={encoded_h if encoded_h else ''}", 
@@ -424,7 +426,7 @@ def proxy_stream(stream_path):
         return f"Proxy Error: {str(e)}", 500
 
 # -------------------------------------------------------------
-# 5. تحميل ملف الـ M3U الأصلي بدون أي تعديل خارجي بالرابط
+# 5. تحميل ملف الـ M3U
 # -------------------------------------------------------------
 @app.route('/download')
 def download_m3u():
