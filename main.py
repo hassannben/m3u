@@ -3,6 +3,7 @@ import requests
 from requests.adapters import HTTPAdapter
 from urllib3.util.retry import Retry
 import re
+import base64
 
 app = Flask(__name__)
 app.secret_key = "iptv_secret_secure_key_12345"
@@ -27,6 +28,12 @@ def safe_fetch(url):
     except:
         pass
     return None
+
+def encode_host(url):
+    return base64.urlsafe_b64encode(url.encode()).decode()
+
+def decode_host(encoded_str):
+    return base64.urlsafe_b64decode(encoded_str.encode()).decode()
 
 # -------------------------------------------------------------
 # 1. واجهة تسجيل الدخول (Login Interface)
@@ -160,9 +167,12 @@ PLAYER_INTERFACE = '''
     </div>
 
     <script src="https://cdn.jsdelivr.net/npm/hls.js@latest"></script>
+    <script src="https://cdn.jsdelivr.net/npm/mpegts.js@1.7.3/dist/mpegts.min.js"></script>
+    
     <script>
         var videoElement = document.getElementById('my-video');
         var hls = null;
+        var tsPlayer = null;
         var currentTab = 'live';
         
         var liveCategories = {{ data.live_cats|tojson }};
@@ -235,42 +245,54 @@ PLAYER_INTERFACE = '''
 
         function playVideo(directUrl, proxyUrl, name, type) {
             document.getElementById('currentPlayingTitle').innerText = "يعرض الآن: " + name;
+            
+            // تنظيف وإيقاف أي مشغل نشط لمنع تسريب الذاكرة أو التداخل
             if (hls) { hls.destroy(); hls = null; }
+            if (tsPlayer) { tsPlayer.unload(); tsPlayer.destroy(); tsPlayer = null; }
+            videoElement.removeAttribute('src');
+            videoElement.load();
 
-            var streamUrl = proxyUrl; 
+            var cleanUrl = proxyUrl.split('?')[0].toLowerCase();
+            var isM3U8 = cleanUrl.endsWith('.m3u8');
+            var isTS = cleanUrl.endsWith('.ts');
 
-            if (type === 'live') {
+            if (type === 'live' && isM3U8) {
+                // دفق القنوات التي تعتمد على الـ m3u8 عبر البروكسي الآمن
                 if (Hls.isSupported()) {
                     hls = new Hls({
                         enableWorker: true,
                         lowLatencyMode: true,
                         maxBufferLength: 30,
-                        maxMaxBufferLength: 60,
-                        xhrSetup: function(xhr, url) {
-                            xhr.withCredentials = false;
-                        }
+                        maxMaxBufferLength: 60
                     });
-                    hls.loadSource(streamUrl);
+                    hls.loadSource(proxyUrl);
                     hls.attachMedia(videoElement);
                     hls.on(Hls.Events.MANIFEST_PARSED, function() { videoElement.play().catch(e => {}); });
-                    
                     hls.on(Hls.Events.ERROR, function(event, data) {
-                        if (data.fatal) {
-                            console.error("فشل دفق البروكسي:", data);
-                        }
-                    });
-                } else if (videoElement.canPlayType('application/vnd.apple.mpegurl')) {
-                    videoElement.src = streamUrl;
-                    videoElement.play().catch(e => {
-                        videoElement.src = directUrl;
-                        videoElement.play().catch(err => {});
+                        if (data.fatal) { console.error("فشل دفق الـ HLS الآمن عبر البروكسي."); }
                     });
                 }
-            } else {
+            } 
+            else if (type === 'live' && isTS) {
+                // السحر: تشغيل قنوات الـ .ts المباشرة والنيئة عبر mpegts.js من خلال البروكسي الآمن
+                if (mpegts.getFeatureList().mseLivePlayback) {
+                    tsPlayer = mpegts.createPlayer({
+                        type: 'mse',
+                        isLive: true,
+                        url: proxyUrl
+                    });
+                    tsPlayer.attachMedia(videoElement);
+                    tsPlayer.load();
+                    tsPlayer.play().catch(e => {
+                        console.error("تعذر تشغيل حزم الـ TS عبر البروكسي:", e);
+                    });
+                }
+            } 
+            else {
+                // تشغيل الأفلام والمسلسلات VOD (mp4/mkv) مجبرة على البروكسي لتفادي حظر الـ Mixed Content
                 videoElement.src = proxyUrl;
                 videoElement.play().catch(err => {
-                    videoElement.src = directUrl;
-                    videoElement.play().catch(e => {});
+                    console.error("فشل تشغيل محتوى الفيلم عبر البروكسي المستقر:", err);
                 });
             }
         }
@@ -337,13 +359,13 @@ def get_streams():
     
     processed_list = []
     if isinstance(raw_streams, list):
+        encoded_h = encode_host(host)
         for item in raw_streams:
             stream_id = item.get('stream_id')
             if not stream_id:
                 continue
                 
             name = item.get('name', 'Unknown')
-            # هنا جلب الامتداد الفعلي المُخزن بالقناة الأصلي دون إجبار تحويل الـ ts
             ext = item.get('container_extension')
             if not ext:
                 ext = 'ts' if stream_type == "live" else "mp4"
@@ -354,7 +376,7 @@ def get_streams():
             processed_list.append({
                 "name": name,
                 "direct_url": f"{host}/{target_path}",
-                "proxy_url": f"/proxy/{target_path}"
+                "proxy_url": f"/proxy/{target_path}?_h={encoded_h}"
             })
             
     return jsonify(processed_list)
@@ -364,13 +386,24 @@ def get_streams():
 # -------------------------------------------------------------
 @app.route('/proxy/<path:stream_path>', methods=['GET'])
 def proxy_stream(stream_path):
-    host = flask_session.get('host')
+    encoded_h = request.args.get('_h')
+    if encoded_h:
+        try:
+            host = decode_host(encoded_h)
+        except:
+            host = flask_session.get('host')
+    else:
+        host = flask_session.get('host')
+
     if not host:
-        return "Unauthorized", 401
+        return "Unauthorized Request Token Missing", 401
 
     target_url = f"{host}/{stream_path}"
-    if request.query_string:
-        target_url += f"?{request.query_string.decode('utf-8')}"
+    
+    remaining_params = {k: v for k, v in request.args.items() if k != '_h'}
+    if remaining_params:
+        from urllib.parse import urlencode
+        target_url += f"?{urlencode(remaining_params)}"
     
     headers = {
         "User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -383,21 +416,26 @@ def proxy_stream(stream_path):
         req = http_session.get(target_url, headers=headers, stream=True, timeout=20, allow_redirects=True)
         
         if req.status_code != 200:
-            return f"Error: {req.status_code}", req.status_code
+            return f"Server Endpoint Error: {req.status_code}", req.status_code
 
         if stream_path.endswith('.m3u8'):
             content = req.text
             base_dir = stream_path.rsplit('/', 1)[0]
-            fixed_content = re.sub(r'([^\s\n\r]+\.ts)', lambda m: f"/proxy/{base_dir}/{m.group(1)}", content)
+            fixed_content = re.sub(
+                r'([^\s\n\r]+\.ts)', 
+                lambda m: f"/proxy/{base_dir}/{m.group(1)}?_h={encoded_h if encoded_h else ''}", 
+                content
+            )
             return Response(fixed_content, content_type='application/x-mpegURL')
         
+        # تمرير الستريم كـ chunks متدفقة للحفاظ على استقرار الذاكرة وسرعة نقل البيانات الآمنة
         return Response(req.iter_content(chunk_size=1024*256), 
                         content_type=req.headers.get('Content-Type', 'video/MP2T'))
     except Exception as e:
-        return f"Proxy Error: {str(e)}", 500
+        return f"Proxy Exception Interrupted: {str(e)}", 500
 
 # -------------------------------------------------------------
-# 5. تحميل ملف الـ M3U الأصلي بدون تعديل روابط القنوات الحية
+# 5. تحميل ملف الـ M3U الأصلي الصافي
 # -------------------------------------------------------------
 @app.route('/download')
 def download_m3u():
@@ -418,7 +456,6 @@ def download_m3u():
                         for item in streams:
                             s_id = item.get("stream_id")
                             if s_id:
-                                # التعديل هنا: جلب الامتداد الفعلي للسيرفر (مثل ts) بدلاً من كتابة m3u8 إجبارياً
                                 ext = item.get("container_extension")
                                 if not ext:
                                     ext = "ts" if block_type == "live" else "mp4"
