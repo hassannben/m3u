@@ -35,6 +35,11 @@ def encode_host(url):
 def decode_host(encoded_str):
     return base64.urlsafe_b64decode(encoded_str.encode()).decode()
 
+# حل مشكلة الـ Favicon 404 المزعجة في المتصفح
+@app.route('/favicon.ico')
+def favicon():
+    return Response(status=204)
+
 # -------------------------------------------------------------
 # 1. واجهة تسجيل الدخول (Login Interface)
 # -------------------------------------------------------------
@@ -246,9 +251,12 @@ PLAYER_INTERFACE = '''
         function playVideo(directUrl, proxyUrl, name, type) {
             document.getElementById('currentPlayingTitle').innerText = "يعرض الآن: " + name;
             
-            // تنظيف وإيقاف أي مشغل نشط لمنع تسريب الذاكرة أو التداخل
+            // تنظيف تام للمشغلات السابقة
             if (hls) { hls.destroy(); hls = null; }
-            if (tsPlayer) { tsPlayer.unload(); tsPlayer.destroy(); tsPlayer = null; }
+            if (tsPlayer) {
+                try { tsPlayer.unload(); tsPlayer.destroy(); } catch(e){}
+                tsPlayer = null;
+            }
             videoElement.removeAttribute('src');
             videoElement.load();
 
@@ -257,44 +265,45 @@ PLAYER_INTERFACE = '''
             var isTS = cleanUrl.endsWith('.ts');
 
             if (type === 'live' && isM3U8) {
-                // دفق القنوات التي تعتمد على الـ m3u8 عبر البروكسي الآمن
                 if (Hls.isSupported()) {
-                    hls = new Hls({
-                        enableWorker: true,
-                        lowLatencyMode: true,
-                        maxBufferLength: 30,
-                        maxMaxBufferLength: 60
-                    });
+                    hls = new Hls({ enableWorker: true, lowLatencyMode: true });
                     hls.loadSource(proxyUrl);
                     hls.attachMedia(videoElement);
                     hls.on(Hls.Events.MANIFEST_PARSED, function() { videoElement.play().catch(e => {}); });
-                    hls.on(Hls.Events.ERROR, function(event, data) {
-                        if (data.fatal) { console.error("فشل دفق الـ HLS الآمن عبر البروكسي."); }
-                    });
                 }
             } 
             else if (type === 'live' && isTS) {
-                // السحر: تشغيل قنوات الـ .ts المباشرة والنيئة عبر mpegts.js من خلال البروكسي الآمن
-                if (mpegts.getFeatureList().mseLivePlayback) {
-                    tsPlayer = mpegts.createPlayer({
-                        type: 'mse',
-                        isLive: true,
-                        url: proxyUrl
-                    });
-                    tsPlayer.attachMedia(videoElement);
-                    tsPlayer.load();
-                    tsPlayer.play().catch(e => {
-                        console.error("تعذر تشغيل حزم الـ TS عبر البروكسي:", e);
-                    });
+                // الفحص الآمن: التأكد التام من تحميل مكتبة mpegts بنجاح وبدون أخطاء
+                if (typeof mpegts !== 'undefined' && mpegts.getFeatureList().mseLivePlayback) {
+                    try {
+                        tsPlayer = mpegts.createPlayer({
+                            type: 'mse',
+                            isLive: true,
+                            url: proxyUrl
+                        });
+                        tsPlayer.attachMedia(videoElement);
+                        tsPlayer.load();
+                        tsPlayer.play().catch(e => { fallbackVideo(proxyUrl); });
+                    } catch(err) {
+                        console.error("خطأ تشغيل mpegts:", err);
+                        fallbackVideo(proxyUrl);
+                    }
+                } else {
+                    // خطة دفاعية إذا حظر المتصفح المكتبة الخارجية
+                    console.warn("مكتبة mpegts غير معرفة، تحويل للتشغيل المباشر عبر البروكسي الآمن.");
+                    fallbackVideo(proxyUrl);
                 }
             } 
             else {
-                // تشغيل الأفلام والمسلسلات VOD (mp4/mkv) مجبرة على البروكسي لتفادي حظر الـ Mixed Content
-                videoElement.src = proxyUrl;
-                videoElement.play().catch(err => {
-                    console.error("فشل تشغيل محتوى الفيلم عبر البروكسي المستقر:", err);
-                });
+                fallbackVideo(proxyUrl);
             }
+        }
+
+        function fallbackVideo(url) {
+            videoElement.src = url;
+            videoElement.play().catch(err => {
+                console.error("تعذر تشغيل الميديا تماماً بسبب قيود المتصفح الصارمة:", err);
+            });
         }
 
         showCategories();
@@ -396,7 +405,7 @@ def proxy_stream(stream_path):
         host = flask_session.get('host')
 
     if not host:
-        return "Unauthorized Request Token Missing", 401
+        return "Unauthorized Request", 401
 
     target_url = f"{host}/{stream_path}"
     
@@ -428,14 +437,13 @@ def proxy_stream(stream_path):
             )
             return Response(fixed_content, content_type='application/x-mpegURL')
         
-        # تمرير الستريم كـ chunks متدفقة للحفاظ على استقرار الذاكرة وسرعة نقل البيانات الآمنة
         return Response(req.iter_content(chunk_size=1024*256), 
                         content_type=req.headers.get('Content-Type', 'video/MP2T'))
     except Exception as e:
         return f"Proxy Exception Interrupted: {str(e)}", 500
 
 # -------------------------------------------------------------
-# 5. تحميل ملف الـ M3U الأصلي الصافي
+# 5. تحميل ملف الـ M3U
 # -------------------------------------------------------------
 @app.route('/download')
 def download_m3u():
